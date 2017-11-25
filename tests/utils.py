@@ -53,10 +53,13 @@ class Pool:
         return list(self.configs.keys())
 
     def _generate_configs(self, server_ids):
-        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': False}
+        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': False,
+            'public_keys': dict()}
 
         for server_id in server_ids:
-            shared['cluster'].add(('127.0.0.1', 9110 + server_id))
+            cluster_tuple = ('127.0.0.1', 9110 + server_id)
+            shared['cluster'].add(cluster_tuple)
+            shared['public_keys'][(cluster_tuple)] = '123'
 
         self.configs = {}
         for server_id in server_ids:
@@ -64,6 +67,7 @@ class Pool:
             config['storage'] = config['storage'].format(server_id)
             config['address'] = ('127.0.0.1', 9110 + server_id)
             config['test_id'] = server_id
+            config['private_key'] = '123'
             self.configs[server_id] = config
 
     def _run_server(self, config):

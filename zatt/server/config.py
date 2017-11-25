@@ -72,8 +72,11 @@ class Config:
             with open(path_conf, 'r') as f:
                 config.update(json.loads(f.read()))
 
-        config['cluster'] = {(config['cluster'][key][0], \
-                                config['cluster'][key][1]) \
+        cluster = config['cluster']
+        config['public_keys'] = {(cluster[key][0], cluster[key][1]): \
+                                    cluster[key][2] 
+                                        for key in config['cluster']}
+        config['cluster'] = {(cluster[key][0], cluster[key][1]) \
                                     for key in config['cluster']}
 
         if cmdline['address']:
