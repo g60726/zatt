@@ -15,7 +15,7 @@ class BasicTest(unittest.TestCase):
         print('BasicTest setup')
         self.pool = Pool(3)
         self.pool.start(self.pool.ids)
-        sleep(2)
+        sleep(1)
 
     def tearDown(self):
         self.pool.stop(self.pool.ids)

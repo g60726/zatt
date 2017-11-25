@@ -10,21 +10,24 @@ class AbstractClient:
     clients."""
 
     def _request(self, message):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(self.server_address)
-        sock.send(msgpack.packb(message, use_bin_type=True))
-
-        buff = bytes()
         while True:
-            block = sock.recv(128)
-            if not block:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(self.server_address)
+            sock.send(msgpack.packb(message, use_bin_type=True))
+
+            buff = bytes()
+            while True:
+                block = sock.recv(128)
+                if not block:
+                    break
+                buff += block
+            resp = msgpack.unpackb(buff, encoding='utf-8')
+            sock.close()
+            if 'type' in resp and resp['type'] == 'redirect':
+                if resp['leader'] is not None:
+                    self.server_address = tuple(resp['leader'])
+            else:
                 break
-            buff += block
-        resp = msgpack.unpackb(buff, encoding='utf-8')
-        sock.close()
-        if 'type' in resp and resp['type'] == 'redirect':
-            self.server_address = tuple(resp['leader'])
-            resp = self._request(message)
         return resp
 
     def _get_state(self):
