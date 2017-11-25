@@ -7,6 +7,7 @@ import logging
 from multiprocessing import Process
 from zatt.server.main import setup
 
+logger = logging.getLogger(__name__)
 
 class Pool:
     def __init__(self, server_ids):
@@ -15,7 +16,7 @@ class Pool:
         self._generate_configs(server_ids)
         self.servers = {}
         for config in self.configs.values():
-            print('Generating server', config['test_id'])
+            logger.debug('Generating server', config['test_id'])
             self.servers[config['test_id']] = (Process(target=self._run_server,
                                                        args=(config,)))
 
@@ -23,14 +24,14 @@ class Pool:
         if type(n) is int:
             n = [n]
         for x in n:
-            print('Starting server', x)
+            logger.debug('Starting server', x)
             self.servers[x].start()
 
     def stop(self, n):
         if type(n) is int:
             n = [n]
         for x in n:
-            print('Stopping server', x)
+            logger.debug('Stopping server', x)
             if self.running[x]:
                 self.servers[x].terminate()
                 self.servers[x] = Process(target=self._run_server,
@@ -41,7 +42,7 @@ class Pool:
             n = [n]
         for x in n:
             shutil.rmtree(self.configs[x]['storage'])
-            print('Removing files related to server', x)
+            logger.debug('Removing files related to server', x)
 
     @property
     def running(self):
@@ -52,7 +53,7 @@ class Pool:
         return list(self.configs.keys())
 
     def _generate_configs(self, server_ids):
-        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': True}
+        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': False}
 
         for server_id in server_ids:
             shared['cluster'].add(('127.0.0.1', 9110 + server_id))
@@ -67,8 +68,6 @@ class Pool:
 
     def _run_server(self, config):
         setup(config)
-        zatt_logger = logging.getLogger('zatt')
-        zatt_logger.setLevel(logging.CRITICAL)
         loop = asyncio.get_event_loop()
         loop.run_forever()
 

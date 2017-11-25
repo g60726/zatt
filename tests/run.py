@@ -57,38 +57,35 @@ class BasicTest(unittest.TestCase):
         d = DistributedDict('127.0.0.1', 9110)
         d['adams'] = 'the hitchhiker guide'
         del d
-        # sleep(1)
         d = DistributedDict('127.0.0.1', 9110)
         self.assertEqual(d['adams'], 'the hitchhiker guide')
 
-    # def test_append_read_different(self):
-    #     print('Append test - Read Different')
-    #     d = DistributedDict('127.0.0.1', 9110)
-    #     d['adams'] = 'the hitchhiker guide'
-    #     del d
-    #     sleep(1)
-    #     d = DistributedDict('127.0.0.1', 9111)
-    #     self.assertEqual(d['adams'], 'the hitchhiker guide')
-    #     del d
-    #     sleep(1)
-    #     d = DistributedDict('127.0.0.1', 9112)
-    #     self.assertEqual(d['adams'], 'the hitchhiker guide')
-    #     del d
+    def test_append_read_different(self):
+        print('Append test - Read Different')
+        d = DistributedDict('127.0.0.1', 9110)
+        d['adams'] = 'the hitchhiker guide'
+        del d
+        d = DistributedDict('127.0.0.1', 9111)
+        self.assertEqual(d['adams'], 'the hitchhiker guide')
+        del d
+        d = DistributedDict('127.0.0.1', 9112)
+        self.assertEqual(d['adams'], 'the hitchhiker guide')
+        del d
 
-    # def test_append_write_multiple(self):
-    #     print('Append test - Write Multiple')
-    #     d0 = DistributedDict('127.0.0.1', 9110)
-    #     d1 = DistributedDict('127.0.0.1', 9111)
-    #     d2 = DistributedDict('127.0.0.1', 9112)
-    #     d0['0'] = '0'
-    #     d1['1'] = '1'
-    #     d2['2'] = '2'
-    #     self.assertEqual(d1['0'], '0')
-    #     self.assertEqual(d2['1'], '1')
-    #     self.assertEqual(d0['2'], '2')
-    #     del d0
-    #     del d1
-    #     del d2
+    def test_append_write_multiple(self):
+        print('Append test - Write Multiple')
+        d0 = DistributedDict('127.0.0.1', 9110)
+        d1 = DistributedDict('127.0.0.1', 9111)
+        d2 = DistributedDict('127.0.0.1', 9112)
+        d0['0'] = '0'
+        d1['1'] = '1'
+        d2['2'] = '2'
+        self.assertEqual(d1['0'], '0')
+        self.assertEqual(d2['1'], '1')
+        self.assertEqual(d0['2'], '2')
+        del d0
+        del d1
+        del d2
 
 
     # def test_2_delete(self):

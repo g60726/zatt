@@ -72,12 +72,6 @@ class State:
         """Redirect client to leader upon receiving a client_config message."""
         return self.on_client_append(protocol, msg)
 
-    def on_client_get(self, protocol, msg):
-        """Return state machine to client."""
-        state_machine = self.log.state_machine.data.copy()
-        self.stats.increment('read')
-        protocol.send(state_machine)
-
     def on_client_diagnostic(self, protocol, msg):
         """Return internal state to client."""
         msg = {'status': self.__class__.__name__,
@@ -95,6 +89,14 @@ class State:
                          'waiting_clients': {k: len(v) for (k, v) in
                                              self.waiting_clients.items()}}})
         protocol.send(msg)
+
+    def on_client_get(self, protocol, msg):
+        """Redirect client to leader upon receiving a client_get message."""
+        msg = {'type': 'redirect',
+               'leader': self.volatile['leaderId']}
+        protocol.send(msg)
+        logger.debug('Redirect client %s:%s to leader',
+                     *protocol.transport.get_extra_info('peername'))
 
     def _update_cluster(self, entries=None):
         """Scans compacted log and log, looking for the latest cluster
@@ -194,7 +196,7 @@ class Candidate(Follower):
         super().__init__(old_state, orchestrator)
         self.persist['currentTerm'] += 1
         self.votes_count = 0
-        logger.info('New Election. Term: %s', self.persist['currentTerm'])
+        logger.debug('New Election. Term: %s', self.persist['currentTerm'])
         self.send_vote_requests()
 
         def vote_self():
@@ -206,7 +208,7 @@ class Candidate(Follower):
 
     def send_vote_requests(self):
         """Ask peers for votes."""
-        logger.info('Broadcasting request_vote')
+        logger.debug('Broadcasting request_vote')
         msg = {'type': 'request_vote', 'term': self.persist['currentTerm'],
                'candidateId': self.volatile['address'],
                'lastLogIndex': self.log.index,
@@ -222,7 +224,7 @@ class Candidate(Follower):
     def on_peer_response_vote(self, peer, msg):
         """Register peers votes, transition to Leader upon majority vote."""
         self.votes_count += msg['voteGranted']
-        logger.info('Vote count: %s', self.votes_count)
+        logger.debug('Vote count: %s', self.votes_count)
         if self.votes_count > len(self.volatile['cluster']) / 2:
             self.orchestrator.change_state(Leader)
 
@@ -319,6 +321,12 @@ class Leader(State):
         self.on_peer_response_append(
             self.volatile['address'], {'success': True,
                                        'matchIndex': self.log.commitIndex})
+
+    def on_client_get(self, protocol, msg):
+        """Return state machine to client."""
+        state_machine = self.log.state_machine.data.copy()
+        self.stats.increment('read')
+        protocol.send(state_machine)
 
     def send_client_append_response(self):
         """Respond to client upon commitment of log entries."""

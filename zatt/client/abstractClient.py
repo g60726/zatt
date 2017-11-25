@@ -32,13 +32,13 @@ class AbstractClient:
 
     def _get_state(self):
         """Retrive remote state machine."""
-        logger.info("get_state")
         self.server_address = tuple(random.choice(self.data['cluster']))
-        return self._request({'type': 'get'})
+        resp = self._request({'type': 'get'})
+        logger.debug(resp)
+        return resp
 
     def _append_log(self, payload):
         """Append to remote log."""
-        logger.info("super append_log")
         return self._request({'type': 'append', 'data': payload})
 
     @property

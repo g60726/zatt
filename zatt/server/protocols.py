@@ -19,7 +19,7 @@ class Orchestrator():
 
     def change_state(self, new_state):
         self.state.teardown()
-        logger.info('State change:' + new_state.__name__)
+        logger.debug('State change:' + new_state.__name__)
         self.state = new_state(old_state=self.state)
 
     def data_received_peer(self, sender, message):
