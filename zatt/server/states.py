@@ -162,7 +162,8 @@ class Follower(State):
 
         term_is_current = msg['term'] >= self.persist['currentTerm']
         prev_log_term_match = msg['prevLogTerm'] is None or\
-            self.log.term(msg['prevLogIndex']) == msg['prevLogTerm']
+            (self.log.index >= msg['prevLogIndex'] and\
+            self.log.term(msg['prevLogIndex']) == msg['prevLogTerm'])
         success = term_is_current and prev_log_term_match
 
         if 'compact_data' in msg:

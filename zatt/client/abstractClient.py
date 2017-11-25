@@ -11,18 +11,25 @@ class AbstractClient:
 
     def _request(self, message):
         while True:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(self.server_address)
-            sock.send(msgpack.packb(message, use_bin_type=True))
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect(self.server_address)
+                sock.send(msgpack.packb(message, use_bin_type=True))
 
-            buff = bytes()
-            while True:
-                block = sock.recv(128)
-                if not block:
-                    break
-                buff += block
-            resp = msgpack.unpackb(buff, encoding='utf-8')
-            sock.close()
+                buff = bytes()
+                while True:
+                    block = sock.recv(128)
+                    if not block:
+                        break
+                    buff += block
+                resp = msgpack.unpackb(buff, encoding='utf-8')
+            except socket.error:
+                # Try a different server
+                self.server_address = tuple(random.choice(self.data['cluster']))
+                continue
+            finally:
+                sock.close()
+
             if 'type' in resp and resp['type'] == 'redirect':
                 if resp['leader'] is not None:
                     self.server_address = tuple(resp['leader'])
