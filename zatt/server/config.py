@@ -14,6 +14,8 @@ parser.add_argument('-a', '--address', help=('This node address. Default: '
                     '127.0.0.1'))
 parser.add_argument('-p', '--port', help='This node port. Default: 5254',
                     type=int)
+parser.add_argument('-i', '--id', help='Node id. Alternate way to\
+                    specify server configs.', type=str)
 parser.add_argument('--remote-address', action='append', default=[],
                     help='Remote node address')
 parser.add_argument('--remote-port', action='append', default=[], type=int,
@@ -41,7 +43,8 @@ class Config:
 
     def _get(self):
         default = {'debug': False, 'address': ['127.0.0.1', 5254],
-                   'cluster': set(), 'storage': 'zatt.persist'}
+                   'cluster': set(), 'storage': 'zatt.persist', 
+                   'private_key': 0, 'public_keys': dict()}
 
         environ = {k[5:].lower(): v for (k, v) in os.environ.items()
                    if k.startswith('ZATT_')}
@@ -69,7 +72,9 @@ class Config:
             with open(path_conf, 'r') as f:
                 config.update(json.loads(f.read()))
 
-        config['cluster'] = {(a, int(p)) for (a, p) in config['cluster']}
+        config['cluster'] = {(config['cluster'][key][0], \
+                                config['cluster'][key][1]) \
+                                    for key in config['cluster']}
 
         if cmdline['address']:
             config['address'][0] = cmdline['address']
@@ -86,6 +91,19 @@ class Config:
         del cmdline['remote_address']
         del cmdline['remote_port']
 
+        if cmdline['id']:
+            with open(path_conf, 'r') as f:
+                conf_file = json.loads(f.read())
+                config['address'][0] = \
+                    conf_file['cluster'][str(cmdline['id'])][0]
+                config['address'][1] = \
+                    conf_file['cluster'][str(cmdline['id'])][1]
+                config['private_key'] = \
+                    config['private_key'][str(cmdline['id'])]
+                config['storage'] = \
+                    config['storage'][str(cmdline['id'])]
+        del cmdline['id']
+
         for k, v in cmdline.items():
             if v is not None:
                 config[k] = v
@@ -94,6 +112,7 @@ class Config:
         config['cluster'].add(config['address'])
         if type(config['debug']) is str:
             config['debug'] = True if config['debug'] == 'true' else False
+        print(config)
         return config
 
 config = Config(None)
