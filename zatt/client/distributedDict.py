@@ -17,7 +17,9 @@ class DistributedDict(collections.UserDict, AbstractClient):
 
     def __getitem__(self, key):
         self.refresh()
-        return self.data[key]
+        if key in self.data:
+            return self.data[key]
+        return None
 
     def __setitem__(self, key, value):
         self._append_log({'action': 'change', 'key': key, 'value': value})

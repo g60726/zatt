@@ -87,24 +87,41 @@ class BasicTest(unittest.TestCase):
         del d1
         del d2
 
+    def test_delete_simple(self):
+        print('Delete test - Simple')
+        d = DistributedDict('127.0.0.1', 9110)
+        d['adams'] = 'the hitchhiker guide'
+        del d['adams']
+        self.assertEqual(d['adams'], None)
+        del d
 
-    # def test_2_delete(self):
-    #     print('Delete test')
-    #     d = DistributedDict('127.0.0.1', 9110)
-    #     d['adams'] = 'the hitchhiker guide'
-    #     del d['adams']
-    #     sleep(1)
-    #     d = DistributedDict('127.0.0.1', 9110)
-    #     self.assertEqual(d, {})
-
-    # def test_3_read_from_different_client(self):
-    #     print('Read from different client')
-    #     d = DistributedDict('127.0.0.1', 9110)
-    #     d['adams'] = 'the hitchhiker guide'
-    #     del d
-    #     sleep(1)
-    #     d = DistributedDict('127.0.0.1', 9111)
-    #     self.assertEqual(d['adams'], 'the hitchhiker guide')
+    def test_delete_complex(self):
+        print('Delete test - Complex')
+        d = DistributedDict('127.0.0.1', 9110)
+        d['0'] = '0'
+        d['1'] = '1'
+        d['2'] = '2'
+        d['3'] = '3'
+        self.assertEqual(d['0'], '0')
+        self.assertEqual(d['1'], '1')
+        self.assertEqual(d['2'], '2')
+        self.assertEqual(d['3'], '3')
+        del d['0']
+        self.assertEqual(d['0'], None)
+        self.assertEqual(d['1'], '1')
+        self.assertEqual(d['2'], '2')
+        self.assertEqual(d['3'], '3')
+        del d['3']
+        del d['2']
+        self.assertEqual(d['0'], None)
+        self.assertEqual(d['1'], '1')
+        self.assertEqual(d['2'], None)
+        self.assertEqual(d['3'], None)
+        d['2'] = '3'
+        self.assertEqual(d['0'], None)
+        self.assertEqual(d['1'], '1')
+        self.assertEqual(d['2'], '3')
+        self.assertEqual(d['3'], None)
 
     # def test_4_compacted_log_replication(self):
     #     print('Compacted log replication')
@@ -157,5 +174,4 @@ class BasicTest(unittest.TestCase):
 if __name__ == '__main__':
     config = Config(config={})
     start_logger()
-    unittest.TestLoader.sortTestMethodsUsing = lambda _, x, y: (y < x)-(y > x)
     unittest.main(verbosity=2)
