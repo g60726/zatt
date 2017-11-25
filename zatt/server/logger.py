@@ -4,6 +4,8 @@ from datetime import datetime
 from .config import config
 from logging.config import dictConfig
 
+PROD_FORMAT = "%(levelname)s at %(asctime)s in %(funcName)s in %(filename) at line %(lineno)d: %(message)s"
+DEV_FORMAT = "%(levelname)s at %(asctime)s in %(funcName)s in %(filename) at line %(lineno)d: %(message)s"
 
 def tick():
     """Unobtrusive periodic timestamp for debug log."""
@@ -19,26 +21,23 @@ def start_logger():
         'version': 1,
         'disable_existing_loggers': False,
         'formatters': {
-            'prod': {'format': '{asctime}: {levelname}: {message}',
-                     'style': '{'},
-            'develop': {'format': '{message}',
-                        'style': '{'}
+            'prod': {'format': PROD_FORMAT},
+            'develop': {'format': DEV_FORMAT}
         },
         'handlers': {
             'console': {'class': 'logging.StreamHandler',
                         'formatter': 'prod',
-                        'level': 'DEBUG'}
+                        'level': logging.DEBUG}
             },
         'loggers': {
             '': {'handlers': ['console'],
                  'level': 'INFO',
-                 'propagate': True,
-                 'extra': {'server_id': 1}}
+                 'propagate': True}
             }
         }
     if config.debug:
         logging_config['handlers']['console']['formatter'] = 'develop'
-        logging_config['loggers']['']['level'] = 'DEBUG'
+        logging_config['loggers']['']['level'] = logging.DEBUG
         loop = asyncio.get_event_loop()
         loop.call_later(1, tick)
 

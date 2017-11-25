@@ -52,7 +52,7 @@ class Pool:
         return list(self.configs.keys())
 
     def _generate_configs(self, server_ids):
-        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': False}
+        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': True}
 
         for server_id in server_ids:
             shared['cluster'].add(('127.0.0.1', 9110 + server_id))

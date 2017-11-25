@@ -1,7 +1,9 @@
 import collections
+import logging
 from zatt.client.abstractClient import AbstractClient
 from zatt.client.refresh_policies import RefreshPolicyAlways
 
+logger = logging.getLogger(__name__)
 
 class DistributedDict(collections.UserDict, AbstractClient):
     """Client for zatt instances with dictionary based state machines."""
@@ -14,10 +16,12 @@ class DistributedDict(collections.UserDict, AbstractClient):
         self.refresh(force=True)
 
     def __getitem__(self, key):
+        logger.info("get_item!")
         self.refresh()
         return self.data[key]
 
     def __setitem__(self, key, value):
+        logger.info("set_item")
         self._append_log({'action': 'change', 'key': key, 'value': value})
 
     def __delitem__(self, key):
@@ -37,9 +41,11 @@ class DistributedDict(collections.UserDict, AbstractClient):
             self.data = self._get_state()
 
     def _append_log(self, payload):
+        logger.info("append_log")
         for attempt in range(self.append_retry_attempts):
             response = super()._append_log(payload)
             if response['success']:
+                logger.info("success")
                 break
         # TODO: logging
         return response

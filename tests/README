@@ -1,0 +1,9 @@
+1. "python setup.py install" in zatt/ directory
+2. "python run.py" in zatt/tests directory 
+3. If you run a few times, you'll find two types of failures:
+	- "TypeError: 'NoneType' object is not iterable" in abstractClient.py _request
+	- "KeyError: 'adams'" in distributedDict.py in __getitem__
+
+Notes:
+- I've added a few logger.info() printout statements to debug
+- The test works if I put in sleep() calls, but for the system to only work robustly with sleep() calls, that means there are race conditions.
