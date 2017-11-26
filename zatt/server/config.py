@@ -23,18 +23,25 @@ parser.add_argument('--remote-port', action='append', default=[], type=int,
 parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
 
-def update_config_json(file, node_id, config):
+def update_config_json(file, node_id, config, client=False):
     if os.path.isfile(file):
         with open(file, 'r') as f:
             config.update(json.loads(f.read()))
 
         cluster = config['cluster']
+        clients = config['clients']
         config['public_keys'] = {(cluster[key][0], cluster[key][1]): \
                                     crypto.load_asymm_pub_key( \
                                         cluster[key][2].encode("utf-8"))
                                             for key in config['cluster']}
+        config['client_keys'] = {(clients[key][0], clients[key][1]): \
+                                    crypto.load_asymm_pub_key( \
+                                        clients[key][2].encode("utf-8"))
+                                            for key in config['clients']}
         config['cluster'] = {(cluster[key][0], cluster[key][1]) \
                                     for key in config['cluster']}
+        config['clients'] = {(clients[key][0], clients[key][1]) \
+                                    for key in config['clients']}
 
         if node_id is not None:
             with open(file, 'r') as f:
@@ -45,6 +52,15 @@ def update_config_json(file, node_id, config):
                         config['private_key'][node_id].encode("utf-8"))
                 config['storage'] = config['storage'][node_id]
                 config['address'] = tuple(config['address'])
+
+                if not client:
+                    del config['client_private_key']
+                else:
+                    config['client_private_key'] = crypto.load_asymm_pr_key( \
+                        config['client_private_key'][node_id].encode("utf-8"))
+                    config['client_address'] = \
+                        (conf_file['clients'][node_id][0], \
+                        conf_file['clients'][node_id][1])
 
     return config
 

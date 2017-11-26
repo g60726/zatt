@@ -10,6 +10,7 @@ class AbstractClient:
     clients."""
 
     def _request(self, message):
+        self.server_address = tuple(random.choice(self.data['cluster']))
         while True:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

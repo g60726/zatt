@@ -1,120 +1,60 @@
 import asyncio
 import logging
-import msgpack
-import random
-import socket
+from multiprocessing import Process
+from zatt.client.clientMain import setup
+from zatt.server.config import update_config_json
 
 logger = logging.getLogger(__name__)
 
-class State:
-	def __init__(self, orchestrator=None):
-		self.orchestrator = orchestrator
+class ClientProcess():
+    def __init__(self, client_ids, client_config):
+        if type(client_ids) is int:
+            client_ids = range(client_ids)
+        self._generate_configs(client_ids, client_config)
+        self.clients = {}
+        for config in self.configs.values():
+            logger.debug('Generating client', config['test_id'])
+            self.clients[config['test_id']] = (Process(target=self._run_client,
+                                                       args=(config,)))
 
-	def data_received_command(self, transport, message):
-		pass # Do nothing if InProgress state
+    def start(self, n):
+        if type(n) is int:
+            n = [n]
+        for x in n:
+            logger.debug('Starting client', x)
+            self.clients[x].start()
 
-	def data_received_server(self, transport, message):
-		pass # Do nothing if Idle state
+    def stop(self, n):
+        if type(n) is int:
+            n = [n]
+        for x in n:
+            logger.debug('Stopping client', x)
+            if self.running[x]:
+                self.clients[x].terminate()
+                self.clients[x] = Process(target=self._run_client,
+                                          args=(self.configs[x],))
 
-	def send_leader_message(self, message):
-		success = False
-		while not success: # Keep trying until a live server is found
-			rand = random.choice(self.orchestrator.server_cluster)
-			success = send_server_message(tuple(rand), message)
+    @property
+    def running(self):
+        return {k: v.is_alive() for (k, v) in self.clients.items()}
 
-	def broadcast_server_message(self, message):
-		for server in self.orchestrator.server_cluster:
-			send_server_message(tuple(server), message)
+    @property
+    def ids(self):
+        return list(self.configs.keys())
 
-    def send_server_message(self, address, message):
-	    try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(address)
-            sock.send(msgpack.packb(message, use_bin_type=True))
-        except socket.error:
-        	return False
-        finally:
-            sock.close()
-        return True
+    def _generate_configs(self, client_ids, client_config):
+        self.configs = {}
+        default = {'debug': False, 'address': ['127.0.0.1', 5254],
+                   'cluster': set(), 'storage': 'zatt.persist', 
+                   'private_key': 0, 'public_keys': dict()}
 
-class Idle(State):
-	def __init__(self, orchestrator=None):
-		super().__init__(orchestrator)
-		self.orchestrator.num_timeout = 0
+        for client_id in client_ids:
+            config = default.copy()
+            config['test_id'] = client_id
+            self.configs[client_id] = \
+                update_config_json(client_config, str(client_id), config, True)
 
-	def data_received_command(self, transport, message):
-		self.orchestrator.transport = transport
-		self.orchestrator.message = message
-		super().send_leader_message(message)
-        self.orchestrator.change_state(InProgress)
-        self.orchestrator.state.start_timer()
-
-class InProgress(State):
-	def __init__(self, orchestrator=None):
-		super().__init__(orchestrator)
-
-	def data_received_server(self, transport, message):
-		self.request_timer.cancel()
-		self.orchestrator.change_state(Idle)
-		self.orchestrator.transport.send(message)
-
-	def start_timer():
-		timeout = 0.5
-		loop = asyncio.get_event_loop()
-		self.request_timer = \
-			loop.call_later(timeout, self.timed_out)
-
-	def timed_out():
-		self.orchestrator.num_timeout += 1
-		super().broadcast_server_message({'type': 'timeout'})
-
-		if self.orchestrator.num_timeout > self.orchestrator.max_timeout:
-			# give up
-			self.orchestrator.transport.send( \
-				{'type': 'result', 'success': False})
-		else:
-			# retry
-			super().send_leader_message(self.orchestrator.message)
-			self.start_timer()
-
-class Orchestrator():
-    def __init__(self, servers):
-        self.state = Idle(orchestrator=self)
-        self.server_cluster = servers
-        self.max_timeout = 5
-        self.num_timeout = 0
-
-    def change_state(self, new_state):
-        self.state = new_state(orchestrator=self)
-
-    def data_received_command(self, transport, message):
-        self.state.data_received_command(transport, message)
-
-    def data_received_server(self, transport, message):
-        self.state.data_received_server(transport, message)
-
-class ServerProtocol(asyncio.Protocol):
-    """TCP protocol for communicating with servers."""
-    def __init__(self, orchestrator):
-        self.orchestrator = orchestrator
-
-    def connection_made(self, transport):
-        logger.debug('Established connection with client %s:%s',
-                     *transport.get_extra_info('peername'))
-        self.transport = transport
-
-    def data_received(self, data):
-        message = msgpack.unpackb(data, encoding='utf-8')
-        if 'server_address' in message:
-			self.orchestrator.data_received_server(self, message)
-		else:
-			self.orchestrator.data_received_command(self, message)
-
-    def connection_lost(self, exc):
-        logger.debug('Closed connection with client %s:%s',
-                     *self.transport.get_extra_info('peername'))
-
-    def send(self, message):
-        self.transport.write(msgpack.packb(
-            message, use_bin_type=True, default=extended_msgpack_serializer))
-        self.transport.close()
+    def _run_client(self, config):
+        setup(config)
+        loop = asyncio.get_event_loop()
+        loop.run_forever()
