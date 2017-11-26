@@ -1,7 +1,7 @@
 import argparse
 import os
 import json
-
+from zatt.common import crypto
 
 parser = argparse.ArgumentParser(description=('Zatt. An implementation of '
                                               'the Raft algorithm for '
@@ -74,8 +74,9 @@ class Config:
 
         cluster = config['cluster']
         config['public_keys'] = {(cluster[key][0], cluster[key][1]): \
-                                    cluster[key][2] 
-                                        for key in config['cluster']}
+                                    crypto.load_asymm_pub_key( \
+                                        cluster[key][2].encode("utf-8"))
+                                            for key in config['cluster']}
         config['cluster'] = {(cluster[key][0], cluster[key][1]) \
                                     for key in config['cluster']}
 
@@ -102,7 +103,9 @@ class Config:
                 config['address'][1] = \
                     conf_file['cluster'][str(cmdline['id'])][1]
                 config['private_key'] = \
-                    config['private_key'][str(cmdline['id'])]
+                    crypto.load_asymm_pr_key( \
+                        config['private_key'][str(cmdline['id'])]\
+                            .encode("utf-8"))
                 config['storage'] = \
                     config['storage'][str(cmdline['id'])]
         del cmdline['id']
@@ -115,7 +118,6 @@ class Config:
         config['cluster'].add(config['address'])
         if type(config['debug']) is str:
             config['debug'] = True if config['debug'] == 'true' else False
-        print(config)
         return config
 
 config = Config(None)
