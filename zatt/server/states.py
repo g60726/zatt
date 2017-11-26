@@ -6,6 +6,8 @@ from os.path import join
 from .utils import PersistentDict, TallyCounter
 from .log import LogManager
 from .config import config
+from collections import defaultdict
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +118,16 @@ class Follower(State):
         super().__init__(old_state, orchestrator)
         self.persist['votedFor'] = None
         self.restart_election_timer()
+        self.waiting_clients = {} # TODO don't need this?
 
     def teardown(self):
         """Stop timers before changing state."""
         self.election_timer.cancel()
+        # TODO fix this
+        for clients in self.waiting_clients.values():
+            for client in clients:
+                client.send({'type': 'result', 'success': False})
+                logger.error('Sent unsuccessful response to client')
 
     def restart_election_timer(self):
         """Delays transition to the Candidate state by timer."""
@@ -153,6 +161,14 @@ class Follower(State):
                     'term': self.persist['currentTerm']}
         self.orchestrator.send_peer(peer, response)
 
+    # TODO: fix this
+    def on_peer_update_waiting_clients(self, peer, msg):
+        if msg['logIndex'] in self.waiting_clients:
+            self.waiting_clients[msg['logIndex']].append(msg['protocol'])
+        else:
+            self.waiting_clients[msg['logIndex']] = [msg['protocol']]
+
+
     def on_peer_append_entries(self, peer, msg):
         """Manages incoming log entries from the Leader.
         Data from log compaction is always accepted.
@@ -174,7 +190,15 @@ class Follower(State):
             logger.debug('Initialized Log with compact data from Leader')
         elif success:
             self.log.append_entries(msg['entries'], msg['prevLogIndex'])
-            self.log.commit(msg['leaderCommit'])
+            # for everything log from self.log.index to msg['leaderCommit'],
+            # need to check if this log's signed_prepares before committing
+            startIndex = self.log.index
+            for index in range(startIndex:msg['leaderCommit'] + 1):
+                isValid = self.checkSignedPrepares(index, msg['signedPrepares'])
+                if isValid:
+                    self.log.commit(index)
+                    # TODO: fix this
+                    self.send_client_append_response()
             self.volatile['leaderId'] = msg['leaderId']
             logger.debug('Log index is now %s', self.log.index)
             self.stats.increment('append', len(msg['entries']))
@@ -184,10 +208,29 @@ class Follower(State):
 
         self._update_cluster()
 
-        resp = {'type': 'response_append', 'success': success,
-                'term': self.persist['currentTerm'],
-                'matchIndex': self.log.index}
-        self.orchestrator.send_peer(peer, resp)
+        if not msg['isCommit']:
+            resp = {'type': 'response_append', 'success': success,
+                    'term': self.persist['currentTerm'],
+                    'matchIndex': self.log.index}
+            self.orchestrator.send_peer(peer, resp)
+
+    # TODO: implement this
+    def checkSignedPrepares(index, signedPrepares):
+        return True
+
+    # TODO: fix this
+    def send_client_append_response(self):
+        """Respond to client upon commitment of log entries."""
+        to_delete = []
+        for client_index, clients in self.waiting_clients.items():
+            if client_index <= self.log.commitIndex:
+                for client in clients:
+                    client.send({'type': 'result', 'success': True})
+                    logger.debug('Sent successful response to client')
+                    self.stats.increment('write')
+                to_delete.append(client_index)
+        for index in to_delete:
+            del self.waiting_clients[index]
 
 
 class Candidate(Follower):
@@ -241,6 +284,7 @@ class Leader(State):
         self.matchIndex = {p: 0 for p in self.volatile['cluster']}
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
         self.waiting_clients = {}
+        self.signedPrepares = defaultdict(set) # maps index to a set of signed prepares (not sure if need to include term)
         self.send_append_entries()
 
         if 'cluster' not in self.log.state_machine:
@@ -262,19 +306,23 @@ class Leader(State):
                 client.send({'type': 'result', 'success': False})
                 logger.error('Sent unsuccessful response to client')
 
-    def send_append_entries(self):
+    def send_append_entries(self, isCommit):
         """Send append_entries to the cluster, containing:
         - nothing: if remote node is up to date.
         - compacted log: if remote node has to catch up.
         - log entries: if available.
-        Finally schedules itself for later esecution."""
+        Finally schedules itself for later execution.
+        Also incorporate a special case for committing entries,
+        in such case isCommit = True."""
         for peer in self.volatile['cluster']:
             if peer == self.volatile['address']:
                 continue
             msg = {'type': 'append_entries',
+                   'isCommit': isCommit,
                    'term': self.persist['currentTerm'],
                    'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
+                   'signedPrepares': self.signedPrepares,
                    'prevLogIndex': self.nextIndex[peer] - 1,
                    'entries': self.log[self.nextIndex[peer]:
                                        self.nextIndex[peer] + 100]}
@@ -289,9 +337,10 @@ class Leader(State):
                          len(msg['entries']), peer, self.nextIndex[peer])
             self.orchestrator.send_peer(peer, msg)
 
-        timeout = randrange(1, 4) * 10 ** (-1 if config.debug else -2)
-        loop = asyncio.get_event_loop()
-        self.append_timer = loop.call_later(timeout, self.send_append_entries)
+        if not isCommit:
+            timeout = randrange(1, 4) * 10 ** (-1 if config.debug else -2)
+            loop = asyncio.get_event_loop()
+            self.append_timer = loop.call_later(timeout, self.send_append_entries, False)
 
     def on_peer_response_append(self, peer, msg):
         """Handle peer response to append_entries.
@@ -301,11 +350,22 @@ class Leader(State):
             self.matchIndex[peer] = msg['matchIndex']
             self.nextIndex[peer] = msg['matchIndex'] + 1
 
+            # TODO: not sure what this is doing
             self.matchIndex[self.volatile['address']] = self.log.index
             self.nextIndex[self.volatile['address']] = self.log.index + 1
-            index = statistics.median_low(self.matchIndex.values())
-            self.log.commit(index)
-            self.send_client_append_response()
+
+            # TODO: need to actually append a signed message instead of just peer's id
+            self.signedPrepares[msg['matchIndex']].add(peer)
+            totalServers = len(self.volatile['cluster'])
+            minRequiredServers = int(math.ceil(1.0 * totalServers / 3 * 2) + 1)))
+            if self.signedPrepares[msg['matchIndex']] >= minRequiredServers:
+                #index = statistics.median_low(self.matchIndex.values())
+                #self.log.commit(index)
+                self.log.commit(msg['matchIndex'])
+                # let follower know a new log has been committed
+                self.send_append_entries(True)
+                # send response back to client, followers also need to do this
+                self.send_client_append_response()
         else:
             self.nextIndex[peer] = max(0, self.nextIndex[peer] - 1)
 
@@ -319,6 +379,16 @@ class Leader(State):
             self.waiting_clients[self.log.index].append(protocol)
         else:
             self.waiting_clients[self.log.index] = [protocol]
+
+        # TODO: fix this. Need to also update follower's waiting_clients
+        for peer in self.volatile['cluster']:
+            if peer == self.volatile['address']:
+                continue
+            msg = {'type': 'update_waiting_clients',
+                   'logIndex': self.log.index,
+                   'protocol': protocol}
+            self.orchestrator.send_peer(peer, msg)
+
         self.on_peer_response_append(
             self.volatile['address'], {'success': True,
                                        'matchIndex': self.log.commitIndex})
@@ -329,13 +399,14 @@ class Leader(State):
         self.stats.increment('read')
         protocol.send(state_machine)
 
+    # TODO: fix this.
     def send_client_append_response(self):
         """Respond to client upon commitment of log entries."""
         to_delete = []
         for client_index, clients in self.waiting_clients.items():
             if client_index <= self.log.commitIndex:
                 for client in clients:
-                    client.send({'type': 'result', 'success': True})  # TODO
+                    client.send({'type': 'result', 'success': True})
                     logger.debug('Sent successful response to client')
                     self.stats.increment('write')
                 to_delete.append(client_index)
