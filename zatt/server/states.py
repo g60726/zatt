@@ -190,15 +190,17 @@ class Follower(State):
             logger.debug('Initialized Log with compact data from Leader')
         elif success:
             self.log.append_entries(msg['entries'], msg['prevLogIndex'])
-            # for everything log from self.log.index to msg['leaderCommit'],
+            # for everything log from self.log.commitIndex to msg['leaderCommit'],
             # need to check if this log's signed_prepares before committing
-            startIndex = self.log.index
-            for index in range(startIndex:msg['leaderCommit'] + 1):
+            startIndex = self.log.commitIndex
+            for index in range(startIndex,msg['leaderCommit'] + 1):
                 isValid = self.checkSignedPrepares(index, msg['signedPrepares'])
                 if isValid:
                     self.log.commit(index)
                     # TODO: fix this
                     self.send_client_append_response()
+                else: # as soon as one log is invalid, break
+                    break
             self.volatile['leaderId'] = msg['leaderId']
             logger.debug('Log index is now %s', self.log.index)
             self.stats.increment('append', len(msg['entries']))
@@ -208,7 +210,7 @@ class Follower(State):
 
         self._update_cluster()
 
-        if not msg['isCommit']:
+        if not msg['isCommit']: # if it's a commit, don't need to notify the leader that commit is successful
             resp = {'type': 'response_append', 'success': success,
                     'term': self.persist['currentTerm'],
                     'matchIndex': self.log.index}
@@ -218,7 +220,7 @@ class Follower(State):
     def checkSignedPrepares(index, signedPrepares):
         return True
 
-    # TODO: fix this
+    # TODO: fix this. Will prob need to include log index
     def send_client_append_response(self):
         """Respond to client upon commitment of log entries."""
         to_delete = []
@@ -350,7 +352,9 @@ class Leader(State):
             self.matchIndex[peer] = msg['matchIndex']
             self.nextIndex[peer] = msg['matchIndex'] + 1
 
-            # TODO: not sure what this is doing
+            # I think what this is doing is that because leader is also calling
+            # on_peer_response_append itself, this is basically the leader trying
+            # to update its own matchIndex and nextIndex
             self.matchIndex[self.volatile['address']] = self.log.index
             self.nextIndex[self.volatile['address']] = self.log.index + 1
 
@@ -366,6 +370,12 @@ class Leader(State):
                 self.send_append_entries(True)
                 # send response back to client, followers also need to do this
                 self.send_client_append_response()
+
+            self.signedPrepares[self.log.index].add(self.volatile['address'])
+            if self.signedPrepares[self.log.index] >= minRequiredServers:
+                self.log.commit(self.log.index)
+                self.send_client_append_response()
+                self.send_append_entries(True)
         else:
             self.nextIndex[peer] = max(0, self.nextIndex[peer] - 1)
 
@@ -399,7 +409,7 @@ class Leader(State):
         self.stats.increment('read')
         protocol.send(state_machine)
 
-    # TODO: fix this.
+    # TODO: fix this. Will prob need to include log index
     def send_client_append_response(self):
         """Respond to client upon commitment of log entries."""
         to_delete = []
