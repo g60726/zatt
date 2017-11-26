@@ -8,12 +8,11 @@ from zatt.server.config import Config
 from zatt.server.logger import start_logger
 
 logger = logging.getLogger(__name__)
+config_file = "../zatt.conf"
 
 class BasicAppendTest(unittest.TestCase):
     def setUp(self):
-        self.maxDiff = None
-        print('BasicTest setup')
-        self.pool = Pool(3)
+        self.pool = Pool(3, config_file)
         self.pool.start(self.pool.ids)
         sleep(1)
 
@@ -94,9 +93,7 @@ class BasicAppendTest(unittest.TestCase):
 
 class FailureModeAppendTest(unittest.TestCase):
     def setUp(self):
-        self.maxDiff = None
-        print('BasicTest setup')
-        self.pool = Pool(3)
+        self.pool = Pool(3, config_file)
         self.pool.start(self.pool.ids)
         sleep(1)
 

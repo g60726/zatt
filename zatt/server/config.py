@@ -23,6 +23,32 @@ parser.add_argument('--remote-port', action='append', default=[], type=int,
 parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
 
+def update_config_json(file, node_id, config):
+    if os.path.isfile(file):
+        with open(file, 'r') as f:
+            config.update(json.loads(f.read()))
+
+        cluster = config['cluster']
+        config['public_keys'] = {(cluster[key][0], cluster[key][1]): \
+                                    crypto.load_asymm_pub_key( \
+                                        cluster[key][2].encode("utf-8"))
+                                            for key in config['cluster']}
+        config['cluster'] = {(cluster[key][0], cluster[key][1]) \
+                                    for key in config['cluster']}
+
+        if node_id is not None:
+            with open(file, 'r') as f:
+                conf_file = json.loads(f.read())
+                config['address'][0] = conf_file['cluster'][node_id][0]
+                config['address'][1] = conf_file['cluster'][node_id][1]
+                config['private_key'] = crypto.load_asymm_pr_key( \
+                        config['private_key'][node_id].encode("utf-8"))
+                config['storage'] = config['storage'][node_id]
+                config['address'] = tuple(config['address'])
+
+    return config
+
+
 class Config:
     """Collect and merge CLI and file based config.
     This class is a singleton based on the Borg pattern."""
@@ -68,24 +94,13 @@ class Config:
         path_conf = cmdline['path_conf'] if cmdline['path_conf']\
             else config['path_conf']
 
-        if os.path.isfile(path_conf):
-            with open(path_conf, 'r') as f:
-                config.update(json.loads(f.read()))
-
-        cluster = config['cluster']
-        config['public_keys'] = {(cluster[key][0], cluster[key][1]): \
-                                    crypto.load_asymm_pub_key( \
-                                        cluster[key][2].encode("utf-8"))
-                                            for key in config['cluster']}
-        config['cluster'] = {(cluster[key][0], cluster[key][1]) \
-                                    for key in config['cluster']}
+        node_id = str(cmdline['id']) if 'id' in cmdline else None
+        config = update_config_json(path_conf, node_id, config)
 
         if cmdline['address']:
             config['address'][0] = cmdline['address']
         if cmdline['port']:
             config['address'][1] = cmdline['port']
-        # cmdline['address'] = (cmdline['address'], cmdline['port'])\
-            # if cmdline['address'] else None
         del cmdline['port']
         del cmdline['address']
 
@@ -94,21 +109,6 @@ class Config:
                                        cmdline['remote_port']))
         del cmdline['remote_address']
         del cmdline['remote_port']
-
-        if cmdline['id']:
-            with open(path_conf, 'r') as f:
-                conf_file = json.loads(f.read())
-                config['address'][0] = \
-                    conf_file['cluster'][str(cmdline['id'])][0]
-                config['address'][1] = \
-                    conf_file['cluster'][str(cmdline['id'])][1]
-                config['private_key'] = \
-                    crypto.load_asymm_pr_key( \
-                        config['private_key'][str(cmdline['id'])]\
-                            .encode("utf-8"))
-                config['storage'] = \
-                    config['storage'][str(cmdline['id'])]
-        del cmdline['id']
 
         for k, v in cmdline.items():
             if v is not None:
