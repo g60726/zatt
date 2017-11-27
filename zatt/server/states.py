@@ -362,7 +362,7 @@ class Leader(State):
             # TODO: need to actually append a signed message instead of just peer's id
             self.signedPrepares[msg['matchIndex']].add(peer)
             totalServers = len(self.volatile['cluster'])
-            minRequiredServers = int(math.ceil(1.0 * totalServers / 3 * 2) + 1)))
+            minRequiredServers = int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
             if self.signedPrepares[msg['matchIndex']] >= minRequiredServers:
                 #index = statistics.median_low(self.matchIndex.values())
                 #self.log.commit(index)
