@@ -29,7 +29,9 @@ class State:
             self.persist = PersistentDict(join(config.storage, 'state'),
                                           {'votedFor': None, 'currentTerm': 0})
             self.volatile = {'leaderId': None, 'cluster': config.cluster,
-                             'address': config.address}
+                'address': config.address, 'private_key': config.private_key,
+                'public_keys': config.public_keys, 'clients': config.clients,
+                'client_keys': config.client_keys}
             self.log = LogManager()
             self._update_cluster()
         self.stats = TallyCounter(['read', 'write', 'append'])
@@ -64,11 +66,14 @@ class State:
 
     def on_client_append(self, protocol, msg):
         """Redirect client to leader upon receiving a client_append message."""
-        msg = {'type': 'redirect',
-               'leader': self.volatile['leaderId']}
-        protocol.send(msg)
-        logger.debug('Redirect client %s:%s to leader',
-                     *protocol.transport.get_extra_info('peername'))
+        # msg = {'type': 'redirect',
+        #        'leader': self.volatile['leaderId']}
+        # protocol.send(msg)
+        if self.volatile['leaderId']:
+            self.orchestrator.redir_leader( \
+                tuple(self.volatile['leaderId']), msg)
+            logger.debug('Redirect client %s:%s to leader',
+                         *protocol.transport.get_extra_info('peername'))
 
     def on_client_config(self, protocol, msg):
         """Redirect client to leader upon receiving a client_config message."""
@@ -94,11 +99,7 @@ class State:
 
     def on_client_get(self, protocol, msg):
         """Redirect client to leader upon receiving a client_get message."""
-        msg = {'type': 'redirect',
-               'leader': self.volatile['leaderId']}
-        protocol.send(msg)
-        logger.debug('Redirect client %s:%s to leader',
-                     *protocol.transport.get_extra_info('peername'))
+        self.on_client_append(protocol, msg)
 
     def _update_cluster(self, entries=None):
         """Scans compacted log and log, looking for the latest cluster
@@ -383,12 +384,13 @@ class Leader(State):
         """Append new entries to Leader log."""
         entry = {'term': self.persist['currentTerm'], 'data': msg['data']}
         if msg['data']['key'] == 'cluster':
-            protocol.send({'type': 'result', 'success': False})
+            self.orchestrator.send_client(msg['client'], \
+                {'type': 'result', 'success': False})
         self.log.append_entries([entry], self.log.index)
         if self.log.index in self.waiting_clients:
-            self.waiting_clients[self.log.index].append(protocol)
+            self.waiting_clients[self.log.index].append(msg['client'])
         else:
-            self.waiting_clients[self.log.index] = [protocol]
+            self.waiting_clients[self.log.index] = [msg['client']]
 
         # TODO: fix this. Need to also update follower's waiting_clients
         for peer in self.volatile['cluster']:
@@ -407,7 +409,8 @@ class Leader(State):
         """Return state machine to client."""
         state_machine = self.log.state_machine.data.copy()
         self.stats.increment('read')
-        protocol.send(state_machine)
+        self.orchestrator.send_client(msg['client'], \
+            {'type': 'result', 'success': True, 'data': state_machine})
 
     # TODO: fix this. Will prob need to include log index
     def send_client_append_response(self):
@@ -416,7 +419,8 @@ class Leader(State):
         for client_index, clients in self.waiting_clients.items():
             if client_index <= self.log.commitIndex:
                 for client in clients:
-                    client.send({'type': 'result', 'success': True})
+                    self.orchestrator.send_client(client, \
+                        {'type': 'result', 'success': True})
                     logger.debug('Sent successful response to client')
                     self.stats.increment('write')
                 to_delete.append(client_index)

@@ -6,14 +6,16 @@ import string
 import logging
 from multiprocessing import Process
 from zatt.server.main import setup
+from zatt.server.config import update_config_json
+from zatt.common import crypto
 
 logger = logging.getLogger(__name__)
 
 class Pool:
-    def __init__(self, server_ids):
+    def __init__(self, server_ids, server_config):
         if type(server_ids) is int:
             server_ids = range(server_ids)
-        self._generate_configs(server_ids)
+        self._generate_configs(server_ids, server_config)
         self.servers = {}
         for config in self.configs.values():
             logger.debug('Generating server', config['test_id'])
@@ -52,23 +54,17 @@ class Pool:
     def ids(self):
         return list(self.configs.keys())
 
-    def _generate_configs(self, server_ids):
-        shared = {'cluster': set(), 'storage': '{}.persist', 'debug': False,
-            'public_keys': dict()}
-
-        for server_id in server_ids:
-            cluster_tuple = ('127.0.0.1', 9110 + server_id)
-            shared['cluster'].add(cluster_tuple)
-            shared['public_keys'][(cluster_tuple)] = '123'
-
+    def _generate_configs(self, server_ids, server_config):
         self.configs = {}
+        default = {'debug': False, 'address': ['127.0.0.1', 5254],
+                   'cluster': set(), 'storage': 'zatt.persist', 
+                   'private_key': 0, 'public_keys': dict()}
+
         for server_id in server_ids:
-            config = copy.deepcopy(shared)
-            config['storage'] = config['storage'].format(server_id)
-            config['address'] = ('127.0.0.1', 9110 + server_id)
+            config = default.copy()
             config['test_id'] = server_id
-            config['private_key'] = '123'
-            self.configs[server_id] = config
+            self.configs[server_id] = \
+                update_config_json(server_config, str(server_id), config)
 
     def _run_server(self, config):
         setup(config)

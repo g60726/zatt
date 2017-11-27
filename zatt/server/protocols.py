@@ -2,6 +2,7 @@ import asyncio
 import os
 import msgpack
 import logging
+import socket
 from .states import Follower
 from .config import config
 from .utils import extended_msgpack_serializer
@@ -16,6 +17,7 @@ class Orchestrator():
     def __init__(self):
         os.makedirs(config.storage, exist_ok=True)
         self.state = Follower(orchestrator=self)
+        self.config = config
 
     def change_state(self, new_state):
         self.state.teardown()
@@ -40,6 +42,26 @@ class Orchestrator():
     def broadcast_peers(self, message):
         for recipient in self.state.volatile['cluster']:
             self.send_peer(recipient, message)
+
+    def redir_leader(self, address, message):
+        self.send_message(address, message)
+
+    def send_client(self, address, message):
+        msg = message.copy()
+        msg['server_address'] = self.config.address
+        self.send_message(address, msg)
+
+    def send_message(self, address, message):
+        address = tuple(address)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(address)
+            sock.send(msgpack.packb(message, use_bin_type=True))
+        except socket.error:
+            return False
+        finally:
+            sock.close()
+        return True
 
 
 class PeerProtocol(asyncio.Protocol):

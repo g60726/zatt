@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 class DistributedDict(collections.UserDict, AbstractClient):
     """Client for zatt instances with dictionary based state machines."""
-    def __init__(self, addr, port, append_retry_attempts=3,
+    def __init__(self, addr, port, append_retry_attempts=10,
                  refresh_policy=RefreshPolicyAlways()):
         super().__init__()
         self.data['cluster'] = [(addr, port)]
@@ -17,8 +17,8 @@ class DistributedDict(collections.UserDict, AbstractClient):
 
     def __getitem__(self, key):
         self.refresh()
-        if key in self.data:
-            return self.data[key]
+        if key in self.data['state']:
+            return self.data['state'][key]
         return None
 
     def __setitem__(self, key, value):
@@ -26,7 +26,7 @@ class DistributedDict(collections.UserDict, AbstractClient):
 
     def __delitem__(self, key):
         self.refresh(force=True)
-        del self.data[self.__keytransform__(key)]
+        del self.data['state'][self.__keytransform__(key)]
         self._append_log({'action': 'delete', 'key': key})
 
     def __keytransform__(self, key):
@@ -38,7 +38,11 @@ class DistributedDict(collections.UserDict, AbstractClient):
 
     def refresh(self, force=False):
         if force or self.refresh_policy.can_update():
-            self.data = self._get_state()
+            for attempt in range(self.append_retry_attempts):
+                response = super()._get_state()
+                if response['success']:
+                    break
+            self.data['state'] = response['data']
 
     def _append_log(self, payload):
         for attempt in range(self.append_retry_attempts):
