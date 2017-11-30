@@ -309,7 +309,6 @@ class Leader(State):
                    'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
                    'prevLogIndex': self.nextIndex[peer] - 1,
-                   'viewid': self.orchestrator.viewid + 1
                    'entries': self.log[self.nextIndex[peer]:
                                        self.nextIndex[peer] + 100]}
             msg.update({'prevLogTerm': self.log.term(msg['prevLogIndex'])})
