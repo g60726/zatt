@@ -41,15 +41,16 @@ class DistributedDict(collections.UserDict, AbstractClient):
             for attempt in range(self.append_retry_attempts):
                 response = super()._get_state()
                 if response['success']:
-                    break
-            self.data['state'] = response['data']
+                    self.data['state'] = response['data']
+                    return
+            logger.info("Refresh timed out!")
 
     def _append_log(self, payload):
         for attempt in range(self.append_retry_attempts):
             response = super()._append_log(payload)
             if response['success']:
-                break
-        return response
+                return response
+        logger.info("Set Item timed out!")
 
 if __name__ == '__main__':
     import sys

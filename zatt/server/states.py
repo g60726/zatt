@@ -72,7 +72,7 @@ class State:
         if self.volatile['leaderId']:
             self.orchestrator.redir_leader( \
                 tuple(self.volatile['leaderId']), msg)
-            logger.debug('Redirect client %s:%s to leader',
+            logger.info('Redirect client %s:%s to leader',
                          *protocol.transport.get_extra_info('peername'))
 
     def on_client_config(self, protocol, msg):
@@ -99,8 +99,12 @@ class State:
         protocol.send(msg)
 
     def on_client_get(self, protocol, msg):
-        """Redirect client to leader upon receiving a client_get message."""
-        self.on_client_append(protocol, msg)
+        """Return state machine to client."""
+        state_machine = self.log.state_machine.data.copy()
+        self.stats.increment('read')
+        self.orchestrator.send_client(msg['client'], \
+            {'type': 'result', 'success': True, 'req_id': msg['req_id'], \
+                'data': state_machine})
 
     def _update_cluster(self, entries=None):
         """Scans compacted log and log, looking for the latest cluster
@@ -166,10 +170,11 @@ class Follower(State):
         self.orchestrator.send_peer(peer, response)
 
     def on_peer_update_waiting_clients(self, peer, msg):
+        new_client = {'addr': msg['client'], 'req_id': msg['req_id']}
         if msg['logIndex'] in self.waiting_clients:
-            self.waiting_clients[msg['logIndex']].append(msg['client'])
+            self.waiting_clients[msg['logIndex']].append(new_client)
         else:
-            self.waiting_clients[msg['logIndex']] = [msg['client']]
+            self.waiting_clients[msg['logIndex']] = [new_client]
 
 
     def on_peer_append_entries(self, peer, msg):
@@ -201,6 +206,7 @@ class Follower(State):
                 if isValid:
                     self.log.commit(index)
                     self.send_client_append_response()
+                    # TODO: Dennis why is there no isCommit check here?
                 else: # as soon as one log is invalid, break
                     break
             self.volatile['leaderId'] = msg['leaderId']
@@ -229,8 +235,9 @@ class Follower(State):
         for client_index, clients in self.waiting_clients.items():
             if client_index <= self.log.commitIndex:
                 for client in clients:
-                    self.orchestrator.send_client(client, \
-                        {'type': 'result', 'success': True})
+                    self.orchestrator.send_client(client['addr'], \
+                        {'type': 'result', 'success': True, \
+                            'req_id': client['req_id']})
                     logger.debug('Sent successful response to client')
                     self.stats.increment('write')
                 to_delete.append(client_index)
@@ -392,10 +399,11 @@ class Leader(State):
             self.orchestrator.send_client(msg['client'], \
                 {'type': 'result', 'success': False})
         self.log.append_entries([entry], self.log.index)
+        new_client = {'addr': msg['client'], 'req_id': msg['req_id']}
         if self.log.index in self.waiting_clients:
-            self.waiting_clients[self.log.index].append(msg['client'])
+            self.waiting_clients[self.log.index].append(new_client)
         else:
-            self.waiting_clients[self.log.index] = [msg['client']]
+            self.waiting_clients[self.log.index] = [new_client]
 
         # Need to also update follower's waiting_clients
         for peer in self.volatile['cluster']:
@@ -403,6 +411,7 @@ class Leader(State):
                 continue
             msg = {'type': 'update_waiting_clients',
                    'logIndex': self.log.index,
+                   'req_id' : msg['req_id'],
                    'client': msg['client'],
                    'term': self.persist['currentTerm']}
             self.orchestrator.send_peer(peer, msg)
@@ -411,22 +420,15 @@ class Leader(State):
             self.volatile['address'], {'success': True,
                                        'matchIndex': self.log.commitIndex})
 
-    def on_client_get(self, protocol, msg):
-        """Return state machine to client."""
-        state_machine = self.log.state_machine.data.copy()
-        self.stats.increment('read')
-        self.orchestrator.send_client(msg['client'], \
-            {'type': 'result', 'success': True, 'data': state_machine})
-
     def send_client_append_response(self):
         """Respond to client upon commitment of log entries."""
         to_delete = []
         for client_index, clients in self.waiting_clients.items():
             if client_index <= self.log.commitIndex:
                 for client in clients:
-                    self.orchestrator.send_client(client, \
-                        {'type': 'result', 'success': True})
-                    logger.debug('Sent successful response to client')
+                    self.orchestrator.send_client(client['addr'], \
+                        {'type': 'result', 'success': True, \
+                            'req_id': client['req_id']})
                     self.stats.increment('write')
                 to_delete.append(client_index)
         for index in to_delete:

@@ -30,6 +30,8 @@ class State:
     def send_server_message(self, address, message):
         msg = message.copy()
         msg['client'] = self.orchestrator.config.client_address
+        msg['req_id'] = self.orchestrator.req_id
+        logger.debug(msg)
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(address)
@@ -47,18 +49,31 @@ class Idle(State):
     def data_received_command(self, transport, message):
         self.orchestrator.transport = transport
         self.orchestrator.message = message
-        super().send_leader_message(message)
+
+        if message['type'] == 'get':
+            super().broadcast_server_message(message)
+        elif message['type'] == 'append':
+            super().send_leader_message(message)
+        else:
+            super().send_leader_message(message)
+
         self.orchestrator.change_state(InProgress)
         self.orchestrator.state.start_timer()
 
 class InProgress(State):
     def __init__(self, orchestrator=None):
         super().__init__(orchestrator)
+        self.responses = {}
+        self.orchestrator.req_id += 1
 
     def data_received_server(self, transport, message):
-        self.request_timer.cancel()
-        self.orchestrator.change_state(Idle)
-        self.orchestrator.transport.send(message)
+        logger.debug(message)
+        if message['req_id'] == self.orchestrator.req_id-1:
+            self.responses[tuple(message['server_address'])] = message
+        if len(self.responses) > self.orchestrator.quorum:
+            self.request_timer.cancel()
+            self.orchestrator.change_state(Idle)
+            self.orchestrator.transport.send(message)
 
     def start_timer(self):
         timeout = 1
@@ -78,6 +93,8 @@ class Orchestrator():
         self.state = Idle(orchestrator=self)
         self.server_cluster = list(config.cluster)
         self.config = config
+        self.req_id = 0
+        self.quorum = 2
 
     def change_state(self, new_state):
         self.state = new_state(orchestrator=self)
