@@ -8,15 +8,14 @@ from .utils import extended_msgpack_serializer
 
 logger = logging.getLogger(__name__)
 
-
 class Orchestrator():
     """The orchestrator manages the current node state,
     switching between Follower, Candidate and Leader when necessary.
     Only one Orchestrator """
     def __init__(self):
         os.makedirs(config.storage, exist_ok=True)
-        self.state = Follower(orchestrator=self)
-
+        self.state = Follower(orchestrator=self,ID=0)
+    
     def change_state(self, new_state):
         self.state.teardown()
         logger.debug('State change:' + new_state.__name__)

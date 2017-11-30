@@ -27,7 +27,6 @@ class Config:
     """Collect and merge CLI and file based config.
     This class is a singleton based on the Borg pattern."""
     __shared_state = {}
-
     def __new__(cls, *p, **k):
         if '_instance' not in cls.__dict__:
             cls._instance = object.__new__(cls)
@@ -40,6 +39,7 @@ class Config:
             self.__dict__ = config
         else:
             self.__dict__ = self._get()
+
 
     def _get(self):
         default = {'debug': False, 'address': ['127.0.0.1', 5254],
@@ -57,10 +57,10 @@ class Config:
                                       environ['remote_port'].split(','))}
             del environ['remote_address']
             del environ['remote_port']
-
+        #####
         config = default.copy()
         config.update(environ)
-
+        #####
         cmdline = parser.parse_args().__dict__
 
         if 'path_conf' not in config:
@@ -113,9 +113,11 @@ class Config:
 
         config['address'] = tuple(config['address'])
         config['cluster'].add(config['address'])
+        config['viewid'] = self.viewid
         if type(config['debug']) is str:
             config['debug'] = True if config['debug'] == 'true' else False
         print(config)
         return config
 
 config = Config(None)
+
