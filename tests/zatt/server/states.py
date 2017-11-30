@@ -27,7 +27,7 @@ class State:
             self.persist = PersistentDict(join(config.storage, 'state'),
                                           {'votedFor': None, 'currentTerm': 0})
             self.volatile = {'leaderId': None, 'cluster': config.cluster,
-                             'address':config.address, 'viewid':0, 'candidateID':0}
+                             'address':config.address, 'candidateID':0}
             self.log = LogManager()
             self._update_cluster()
         self.stats = TallyCounter(['read', 'write', 'append'])
@@ -119,7 +119,7 @@ class Follower(State):
         self.restart_election_timer()
         self.ID = ID
         #v mode R is preset candidate
-        if self.ID == self.volatile['viewid'] % len(self.volatile['cluster']):
+        if self.ID == self.persist['currentTerm'] % len(self.volatile['cluster']):
             self.orchestrator.change_state(Candidate)
 
     def teardown(self):
@@ -144,30 +144,31 @@ class Follower(State):
     def on_client_start_vote(self, msg):
         """Grant this node's vote to Candidates."""
         term_is_current = msg['term'] >= self.persist['currentTerm']
-        #can_vote = self.persist['votedFor'] in [tuple(msg['candidateId']),
-            #None]
         index_is_current = (msg['lastLogTerm'] > self.log.term() or
                             (msg['lastLogTerm'] == self.log.term() and
                              msg['lastLogIndex'] >= self.log.index))
         granted = term_is_current and index_is_current #and can_vote and index_is_current
         if granted:
-            '''
-            self.persist['votedFor'] = msg['candidateId']
-            self.restart_election_timer()
-            '''
             method = getattr(self, 'on_candy_' + msg['type'], None) #msg['type'] = start_vote
             if method:
                 method(msg)
 
-        timeout = randrange(1, 4) * 10 ** (0 if config.debug else -1)
-        '''
-        logger.debug('Voting for %s. Term:%s Vote:%s Index:%s',
-                     peer, term_is_current, can_vote, index_is_current)
-
-        response = {'type': 'response_vote', 'voteGranted': granted,
-                    'term': self.persist['currentTerm']}
+    def on_peer_request_vote(self, peer, msg):
+        """Grant this node's vote to Candidates."""
+        term_is_current = msg['term'] >= self.persist['currentTerm']
+        can_vote = self.persist['votedFor'] in [tuple(msg['candidateId']),
+                                                None]
+        index_is_current = (msg['lastLogTerm'] > self.log.term() or (msg['lastLogTerm'] == self.log.term() and
+                            msg['lastLogIndex'] >= self.log.index))
+        granted = term_is_current and can_vote and index_is_current
+                                                
+        if granted:
+            self.persist['votedFor'] = msg['candidateId']
+            self.restart_election_timer()
+                                                    
+        logger.debug('Voting for %s. Term:%s Vote:%s Index:%s',peer, term_is_current, can_vote,index_is_current)
+        response = {'type': 'response_vote', 'voteGranted': granted,'term': self.persist['currentTerm']}
         self.orchestrator.send_peer(peer, response)
-        '''
 
     def on_peer_append_entries(self, peer, msg):
         """Manages incoming log entries from the Leader.
@@ -223,7 +224,7 @@ class Candidate(Follower):
         
         loop = asyncio.get_event_loop()
         loop.call_soon(vote_self)
-    '''
+
     def send_vote_requests(self):
         """Ask peers for votes."""
         logger.debug('Broadcasting request_vote')
@@ -232,26 +233,33 @@ class Candidate(Follower):
                'lastLogIndex': self.log.index,
                'lastLogTerm': self.log.term()}
         self.orchestrator.broadcast_peers(msg)
-    '''
+
 
     def on_peer_append_entries(self, peer, msg):
         """Transition back to Follower upon receiving an append_entries."""
         logger.debug('Converting to Follower')
         self.orchestrator.change_state(Follower)
         self.orchestrator.state.on_peer_append_entries(peer, msg)
-
-    def on_candy_start_vote(self,msg):
+    
+    def on_peer_response_vote(self, peer, msg):
         """Register peers votes, transition to Leader upon majority vote."""
-        self.votes_count += 1
+        self.votes_count += msg['voteGranted']
         logger.debug('Vote count: %s', self.votes_count)
         if self.votes_count > len(self.volatile['cluster']) / 2:
-            self.volatile['viewid'] += 1
-            self.volatile['candidateID'] = self.volatile['viewid'] % self.volatile['cluster']
+            self.volatile['candidateID'] = self.persist['currentTerm'] % self.volatile['cluster']
             self.orchestrator.change_state(Leader)
             ###make new candidate from followers
             method = getattr(self, 'check_id', None)
             if method:
                 method(self.volatile['candidateID'])
+
+    def on_candy_start_vote(self,msg):
+        """Register peers votes, transition to Leader upon majority vote."""
+        self.votes_count += 1
+        logger.debug('Vote count: %s', self.votes_count)
+        if self.votes_count > int(math.ceil(1.0 * len(self.volatile['cluster']) / 3 * 2) + 1):
+            self.votes_count = 0
+            self.send_vote_requests()
 
 ###report to client???
 
