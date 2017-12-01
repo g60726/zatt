@@ -90,10 +90,15 @@ def msgpack_appendable_unpack(path):
     with open(path, 'rb') as f:
         packer = msgpack.Packer()
         unpacker = msgpack.Unpacker(f, encoding='utf-8')
-        length = unpacker.read_array_header()
 
-        header_lenght = len(packer.pack_array_header(length))
-        unpacker.read_bytes(MAX_MSGPACK_ARRAY_HEADER_LEN - header_lenght)
+        length = 0
+        try:
+            length = unpacker.read_array_header()
+        except msgpack.OutOfData:
+            length = 0
+
+        header_length = len(packer.pack_array_header(length))
+        unpacker.read_bytes(MAX_MSGPACK_ARRAY_HEADER_LEN - header_length)
         f.seek(MAX_MSGPACK_ARRAY_HEADER_LEN)
 
         return [unpacker.unpack() for _ in range(length)]

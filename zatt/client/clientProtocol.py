@@ -31,11 +31,11 @@ class State:
         msg = message.copy()
         msg['client'] = self.orchestrator.config.client_address
         msg['req_id'] = self.orchestrator.req_id
-        logger.debug(msg)
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(address)
             sock.send(msgpack.packb(msg, use_bin_type=True))
+            logger.debug(msg)
         except socket.error:
             return False
         finally:
@@ -70,13 +70,13 @@ class InProgress(State):
         logger.debug(message)
         if message['req_id'] == self.orchestrator.req_id-1:
             self.responses[tuple(message['server_address'])] = message
-        if len(self.responses) > self.orchestrator.quorum:
+        if len(self.responses) >= self.orchestrator.quorum:
             self.request_timer.cancel()
             self.orchestrator.change_state(Idle)
             self.orchestrator.transport.send(message)
 
     def start_timer(self):
-        timeout = 1
+        timeout = 3
         loop = asyncio.get_event_loop()
         self.request_timer = \
             loop.call_later(timeout, self.timed_out)
@@ -94,7 +94,7 @@ class Orchestrator():
         self.server_cluster = list(config.cluster)
         self.config = config
         self.req_id = 0
-        self.quorum = 2
+        self.quorum = 2 # TODO: Dennis calculate based on the server_cluster
 
     def change_state(self, new_state):
         self.state = new_state(orchestrator=self)
