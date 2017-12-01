@@ -248,13 +248,13 @@ class Follower(State):
     # signedPrepares is a list of tuples = (string representation of msg, signature, and sender)
     def checkSignedPrepares(self, index, signedPrepares):
         for signedPrepare in signedPrepares:
-            # FIXME: I'm not sure how to cast string back to bytes....
-            isValid = crypto.verify_message(signedPrepare[0], self.volatile['public_keys'][tuple(signedPrepare[2])], bytes(signedPrepare[1], 'ascii'))
+            # FIXME: Getting Message too long error
+            isValid = crypto.verify_message(signedPrepare[0], self.volatile['public_keys'][tuple(signedPrepare[2])], eval(signedPrepare[1]))
             if not isValid:
                 logger.error('OMGGGGGGGGGGGGGGGG')
                 return False
-            actualMsg = json.loads(msg[0])
-            if not(actualMsg['type'] == 'response_append' and actualMsg['success']):
+            msg = json.loads(signedPrepare[0])
+            if not(msg['type'] == 'response_append' and msg['success']):
                 logger.error('OMGGGGGGGGGGGGGGGG2222222222222222')
                 return False
         return True
@@ -405,8 +405,7 @@ class Leader(State):
             self.matchIndex[self.volatile['address']] = self.log.index
             self.nextIndex[self.volatile['address']] = self.log.index + 1
 
-            # FIXME: a signature (msg[1]) is of type bytes, and json can't serialize bytes,
-            # so I turned it into str, but apparently I can't cast it back to bytes properly
+            # signature (msg[1]) is of type bytes, and json can't serialize bytes so I cast it to str
             self.signedPrepares[actualMsg['matchIndex']].add((msg[0], str(msg[1]), peer))
             totalServers = len(self.volatile['cluster'])
             minRequiredServers = 2 # TODO: Dennis int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
