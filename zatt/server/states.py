@@ -219,15 +219,15 @@ class Follower(State):
             # for everything log from self.log.commitIndex to msg['leaderCommit'],
             # need to check if this log's signedPrepares before committing
             startIndex = self.log.commitIndex
+            # TODO: Dennis should there be a check for number of signedPrepares?
+            # TODO: Dennis should we commit if msg['isCommit'] isn't true?
             for index in range(startIndex, msg['leaderCommit'] + 1):
                 isValid = self.checkSignedPrepares(index, msg['signedPrepares'])
                 if isValid:
                     self.log.commit(index)
                     self.send_client_append_response()
-                    # TODO: Dennis why is there no isCommit check here?
-                    # It doesn't really matter if it has been committed before. log.commit()
-                    # will do that check anyways
                 else: # as soon as one log is invalid, break
+                    logger.info("Invalid signature!!")
                     break
             self.volatile['leaderId'] = msg['leaderId']
             logger.debug('Log index is now %s', self.log.index)
@@ -328,6 +328,7 @@ class Leader(State):
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
         self.waiting_clients = {}
         self.signedPrepares = defaultdict(set) # maps index to a set of signed prepares
+        self.signedSeen = defaultdict(dict)
         self.send_append_entries()
 
         if 'cluster' not in self.log.state_machine:
@@ -404,11 +405,16 @@ class Leader(State):
 
             # because leader is also calling on_peer_response_append itself, this is
             # basically the leader trying to update its own matchIndex and nextIndex
-            self.matchIndex[self.volatile['address']] = self.log.index
-            self.nextIndex[self.volatile['address']] = self.log.index + 1
+            # self.matchIndex[self.volatile['address']] = self.log.index
+            # self.nextIndex[self.volatile['address']] = self.log.index + 1
 
             # signature (msg[1]) is of type bytes, and json can't serialize bytes so I cast it to str
-            self.signedPrepares[actualMsg['matchIndex']].add((msg[0], str(msg[1]), peer))
+            if peer not in self.signedSeen[actualMsg['matchIndex']]:
+                self.signedSeen[actualMsg['matchIndex']][peer] = 1;
+                self.signedPrepares[actualMsg['matchIndex']].\
+                    add((msg[0], str(msg[1]), peer))
+                logger.info(self.signedPrepares[actualMsg['matchIndex']])
+            
             totalServers = len(self.volatile['cluster'])
             minRequiredServers = 2 # TODO: Dennis int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
             if len(self.signedPrepares[actualMsg['matchIndex']]) >= minRequiredServers:
@@ -416,12 +422,6 @@ class Leader(State):
                 # let follower know a new log has been committed
                 self.send_append_entries(True)
                 # send response back to client, followers also need to do this
-                self.send_client_append_response()
-
-            self.signedPrepares[self.log.index].add((msg[0], str(msg[1]), peer))
-            if len(self.signedPrepares[self.log.index]) >= minRequiredServers:
-                self.log.commit(self.log.index)
-                self.send_append_entries(True)
                 self.send_client_append_response()
         else:
             self.nextIndex[peer] = max(0, self.nextIndex[peer] - 1)
