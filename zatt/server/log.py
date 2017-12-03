@@ -124,12 +124,12 @@ class LogManager:
             logger.debug('Appending. New log: %s', self.log.data)
 
     def commit(self, leaderCommit):
-        if leaderCommit <= self.commitIndex:
-            return
-
-        self.commitIndex = min(leaderCommit, self.index)  # no overshoots
-        logger.debug('Advancing commit to %s', self.commitIndex)
-        # above is the actual commit operation, just incrementing the counter!
-        # the state machine application could be asynchronous
-        self.state_machine.apply(self, self.commitIndex)
-        logger.debug('State machine: %s', self.state_machine.data)
+        # enforce serial commits
+        if leaderCommit == self.commitIndex + 1:
+            self.commitIndex = min(leaderCommit, self.index)  # no overshoots
+            logger.debug('Advancing commit to %s', self.commitIndex)
+            # above is the actual commit operation, just incrementing the counter!
+            # the state machine application could be asynchronous
+            self.state_machine.apply(self, self.commitIndex)
+            logger.debug('State machine: %s', self.state_machine.data)
+        return self.commitIndex
