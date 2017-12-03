@@ -149,8 +149,9 @@ class Follower(State):
         self.election_timer.cancel()
         for clients in self.waiting_clients.values():
             for client in clients:
-                self.orchestrator.send_client(client, \
-                    {'type': 'result', 'success': False})
+                self.orchestrator.send_client(client['addr'], \
+                    {'type': 'result', 'success': False, \
+                        'req_id': client['req_id']})
                 logger.error('Sent unsuccessful response to client')
 
     def restart_election_timer(self):
@@ -345,8 +346,9 @@ class Leader(State):
             self.config_timer.cancel()
         for clients in self.waiting_clients.values():
             for client in clients:
-                self.orchestrator.send_client(client, \
-                    {'type': 'result', 'success': False})
+                self.orchestrator.send_client(client['addr'], \
+                    {'type': 'result', 'success': False, \
+                        'req_id': client['req_id']})
                 logger.error('Sent unsuccessful response to client')
 
     def send_append_entries(self, isCommit=False):
