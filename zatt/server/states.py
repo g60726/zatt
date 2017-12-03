@@ -61,10 +61,7 @@ class State:
                 return
         method = getattr(self, 'on_peer_' + actualMsg['type'], None)
         if method:
-            if actualMsg['type'] == 'response_append':
-                method(peer, msg) # msg = [string representation of message, signature of message]
-            else:    
-                method(peer, actualMsg)
+            method(peer, actualMsg)
         else:
             logger.info('Unrecognized message from %s: %s', peer, actualMsg)
 
@@ -152,65 +149,92 @@ class Follower(State):
         self.orchestrator.send_peer(peer, response)
 
     def on_peer_append_prepare(self, peer, msg):
-        new_client = {'addr': msg['client'], 'req_id': msg['req_id']}
+        # TODO: verify client signature
+        client_msg = msg['message']
+
+        # keep track of the new client (to respond to upon commit)
+        new_client = {'addr': client_msg['client'], \
+                      'req_id': client_msg['req_id']}
         if msg['logIndex'] in self.waiting_clients:
             self.waiting_clients[msg['logIndex']].append(new_client)
         else:
             self.waiting_clients[msg['logIndex']] = [new_client]
 
+        # append new entry at tip of log
+        entry = {'term': msg['term'], \
+                 'data': client_msg['data'], \
+                 'log_index': msg['logIndex']}
+        self.log.append_entries([entry], msg['logIndex'])
+
+        # respond with successful prepare to leader
+        self.volatile['leaderId'] = msg['leaderId']
+        (entry, sig) = self.sign_message(entry)
+        resp = {'type': 'response_prepare', \
+                'term': msg['term'], \
+                'logIndex': msg['logIndex'], \
+                'entry': entry, \
+                'entrySig': sig}
+        resp = self.sign_message(resp)
+        self.on_peer_response_append(self.volatile['leaderId'], resp)
 
     def on_peer_append_entries(self, peer, msg):
-        """Manages incoming log entries from the Leader.
-        Data from log compaction is always accepted.
-        In the end, the log is scanned for a new cluster config.
-        """
+        """ Manages incoming log entries from the Leader """
         self.restart_election_timer()
+        self.volatile['leaderId'] = msg['leaderId']
 
         term_is_current = msg['term'] >= self.persist['currentTerm']
-        prev_log_term_match = msg['prevLogTerm'] is None or\
-            (self.log.index >= msg['prevLogIndex'] and\
-            self.log.term(msg['prevLogIndex']) == msg['prevLogTerm'])
+        prev_term = msg['prevLogEntry']['term']
+        prev_log_index = msg['prevLogEntry']['log_index']
+        prev_log_term_match = prev_term is None or \
+            (self.log.index >=  prev_log_index and \
+             self.log.term(prev_log_index) == prev_term and \
+             len(msg['prevLogSigs']) >= 2)
+        # TODO: verify signatures on the provided entry
+
         success = term_is_current and prev_log_term_match
 
+        # attempt to append to log
         if success:
-            self.log.append_entries(msg['entries'], msg['prevLogIndex'])
-            # for everything log from self.log.commitIndex to msg['leaderCommit'],
-            # need to check if this log's signedPrepares before committing
-            startIndex = self.log.commitIndex
-            # TODO: Dennis should there be a check for number of signedPrepares?
-            for index in range(startIndex, msg['leaderCommit'] + 1):
-                isValid = self.checkSignedPrepares(index, msg['signedPrepares'])
-                if isValid:
-                    self.log.commit(index)
-                else: # as soon as one log is invalid, break
+            for index in range(len(msg['sigs'])):
+                if len(msg['sigs'][index]) >= 2:
+                # TODO: verify signatures on the provided entry
+                    entry = msg['entries'][index]
+                    log_idx = entry['log_index']
+                    # record entries, signatures, and persist the proof
+                    self.log.append_entries(entry, log_idx)
+                    self.sig_log.append_entries(msg['sigs'][index], log_idx)
+                    self.log.commit(log_idx)
+                else:
                     logger.info("Invalid signature!!")
                     break
-            self.volatile['leaderId'] = msg['leaderId']
             self.send_client_append_response()
-            logger.debug('Log index is now %s', self.log.index)
+            logger.debug('Log index is now %s', self.log.commitIndex)
+        # could not append to log
         else:
             logger.warning('Could not append entries. cause: %s', 'wrong\
                 term' if not term_is_current else 'prev log term mismatch')
 
-        resp = {'type': 'response_append', 'success': success,
-                'term': self.persist['currentTerm'],
-                'matchIndex': self.log.index}
+        # respond to leader with success/fail of the log append
+        resp = {'type': 'response_append', \
+                'success': success, \
+                'term': self.persist['currentTerm'], \
+                'matchIndex': self.log.commitIndex}
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
-    # TODO: implement this
-    # signedPrepares is a list of tuples = (string representation of msg, signature, and sender)
-    def checkSignedPrepares(self, index, signedPrepares):
-        for signedPrepare in signedPrepares:
-            isValid = crypto.verify_message(signedPrepare[0], self.volatile['public_keys'][tuple(signedPrepare[2])], eval(signedPrepare[1]))
-            if not isValid:
-                logger.error('OMGGGGGGGGGGGGGGGG')
-                return False
-            msg = json.loads(signedPrepare[0])
-            if not(msg['type'] == 'response_append' and msg['success']):
-                logger.error('OMGGGGGGGGGGGGGGGG2222222222222222')
-                return False
-        return True
+    # # TODO: implement this
+    # # signedPrepares is a list of tuples = (string representation of msg, signature, and sender)
+    # def checkSignedPrepares(self, index, signedPrepares):
+    #     for signedPrepare in signedPrepares:
+    #         isValid = crypto.verify_message(signedPrepare[0], self.volatile['public_keys'][tuple(signedPrepare[2])], eval(signedPrepare[1]))
+    #         if not isValid:
+    #             logger.error('OMGGGGGGGGGGGGGGGG')
+    #             return False
+    #         msg = json.loads(signedPrepare[0])
+    #         if not(msg['type'] == 'response_append' and msg['success']):
+    #             logger.error('OMGGGGGGGGGGGGGGGG2222222222222222')
+    #             return False
+    #     return True
 
     def send_client_append_response(self):
         """Respond to client upon commitment of log entries."""
@@ -319,9 +343,8 @@ class Leader(State):
                    'term': self.persist['currentTerm'],
                    'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
-                   'prevLogIndex': self.nextIndex[peer] - 1,
-                   'prevLogTerm': self.log.term(self.nextIndex[peer] - 1),
-                   'prevLogSigs': self.log[self.nextIndex[peer] - 1],
+                   'prevLogEntry': self.log[self.nextIndex[peer] - 1],
+                   'prevLogSigs': self.sig_log[self.nextIndex[peer] - 1],
                    'entries': self.log[self.nextIndex[peer]: \
                                        self.nextIndex[peer] + 100], \
                    'sigs': self.sig_log[self.nextIndex[peer]: \
@@ -338,14 +361,11 @@ class Leader(State):
         self.append_timer = loop.call_later(timeout, self.send_append_entries)
 
     def on_peer_response_append(self, peer, msg):
-        # TODO: verify peer's signature
-        actual_msg = json.loads(msg[0])
-
         # record peer's signed prepare
-        if actual_msg['success']:
+        if msg['success']:
             # update leader's understanding of peer's updated log indices
-            self.matchIndex[peer] = actual_msg['matchIndex']
-            self.nextIndex[peer] = actual_msg['matchIndex'] + 1
+            self.matchIndex[peer] = msg['matchIndex']
+            self.nextIndex[peer] = msg['matchIndex'] + 1
 
             # because leader is also calling on_peer_response_append itself, 
             # this is the leader trying to update its own indices
@@ -357,13 +377,11 @@ class Leader(State):
 
 
     def on_peer_response_prepare(self, peer, msg):
-        # TODO: verify peer's signature
         # store peer's signed prepare
-        actual_msg = json.loads(msg[0])
-        idx = actual_msg['log_index']
+        idx = msg['logIndex']
         if idx in self.signedPrepares:
             if peer not in self.signedPrepares[idx]:
-                sig = (actual_msg['entry'], str(actual_msg['entry_sig']))
+                sig = (json.loads(msg['entry']), str(msg['entrySig']))
                 self.signedPrepares[idx]['sigs'][peer] = sig
 
         # try to commit entries with a quorum of signatures
@@ -398,14 +416,16 @@ class Leader(State):
             self.waiting_clients[self.log.index] = [new_client]
 
         # append new entry to tip of Leader log
-        entry = {'term': self.persist['currentTerm'], 'data': msg['data'], \
-                    'log_index': self.log.index}
+        entry = {'term': self.persist['currentTerm'], \
+                 'data': msg['data'], \
+                 'log_index': self.log.index}
         self.log.append_entries([entry], self.log.index)
 
         # put together the prepare message
         prepare = {'type': 'append_prepare', \
-                   'logIndex': self.log.index, \
                    'term': self.persist['currentTerm'], \
+                   'leaderId': self.volatile['address'], \
+                   'logIndex': self.log.index, \
                    'message': msg} # TODO: does this send?
         self.signedPrepares[self.log.index] = {'prepare_msg': prepare, \
                                                 'sigs': {}}
@@ -418,8 +438,12 @@ class Leader(State):
             self.orchestrator.send_peer(peer, self.sign_message(prepare))
 
         # respond with successful prepare to self
-        resp = {'type': 'response_append', 'success': True, \
-                    'matchIndex': self.log.commitIndex}
+        (entry, sig) = self.sign_message(entry)
+        resp = {'type': 'response_prepare', \
+                'term': msg['term'], \
+                'logIndex': msg['logIndex'], \
+                'entry': entry, \
+                'entrySig': sig}
         resp = self.sign_message(resp)
         self.on_peer_response_append(self.volatile['address'], resp)
 

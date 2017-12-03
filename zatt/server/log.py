@@ -119,6 +119,7 @@ class LogManager:
             return self[index]['term']
 
     def append_entries(self, entries, prevLogIndex):
+        # TODO: check to make sure serialized
         self.log.append_entries(entries, prevLogIndex - self.compacted.index)
         if entries:
             logger.debug('Appending. New log: %s', self.log.data)
