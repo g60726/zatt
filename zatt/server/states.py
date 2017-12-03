@@ -176,33 +176,30 @@ class Follower(State):
             # need to check if this log's signedPrepares before committing
             startIndex = self.log.commitIndex
             # TODO: Dennis should there be a check for number of signedPrepares?
-            # TODO: Dennis should we commit if msg['isCommit'] isn't true?
             for index in range(startIndex, msg['leaderCommit'] + 1):
                 isValid = self.checkSignedPrepares(index, msg['signedPrepares'])
                 if isValid:
                     self.log.commit(index)
-                    self.send_client_append_response()
                 else: # as soon as one log is invalid, break
                     logger.info("Invalid signature!!")
                     break
             self.volatile['leaderId'] = msg['leaderId']
+            self.send_client_append_response()
             logger.debug('Log index is now %s', self.log.index)
         else:
             logger.warning('Could not append entries. cause: %s', 'wrong\
                 term' if not term_is_current else 'prev log term mismatch')
 
-        if not msg['isCommit']: # if it's a commit, don't need to notify the leader that commit is successful
-            resp = {'type': 'response_append', 'success': success,
-                    'term': self.persist['currentTerm'],
-                    'matchIndex': self.log.index}
-            resp = self.sign_message(resp)
-            self.orchestrator.send_peer(peer, resp)
+        resp = {'type': 'response_append', 'success': success,
+                'term': self.persist['currentTerm'],
+                'matchIndex': self.log.index}
+        resp = self.sign_message(resp)
+        self.orchestrator.send_peer(peer, resp)
 
     # TODO: implement this
     # signedPrepares is a list of tuples = (string representation of msg, signature, and sender)
     def checkSignedPrepares(self, index, signedPrepares):
         for signedPrepare in signedPrepares:
-            # FIXME: Getting Message too long error
             isValid = crypto.verify_message(signedPrepare[0], self.volatile['public_keys'][tuple(signedPrepare[2])], eval(signedPrepare[1]))
             if not isValid:
                 logger.error('OMGGGGGGGGGGGGGGGG')
@@ -309,9 +306,7 @@ class Leader(State):
         - nothing: if remote node is up to date.
         - compacted log: if remote node has to catch up.
         - log entries: if available.
-        Finally schedules itself for later execution.
-        Also incorporate a special case for committing entries,
-        in such case isCommit = True."""
+        Finally schedules itself for later execution."""
         signedPrepares = list(self.signedPrepares[self.log.commitIndex])
         newSignedPrepares = []
         for signedPrepare in signedPrepares:
@@ -320,7 +315,6 @@ class Leader(State):
             if peer == self.volatile['address']:
                 continue
             msg = {'type': 'append_entries',
-                   'isCommit': isCommit,
                    'term': self.persist['currentTerm'],
                    'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
@@ -336,10 +330,9 @@ class Leader(State):
             newMsg = self.sign_message(msg)
             self.orchestrator.send_peer(peer, newMsg)
 
-        if not isCommit:
-            timeout = randrange(1, 4) * 10 ** (-1 if config.debug else -2)
-            loop = asyncio.get_event_loop()
-            self.append_timer = loop.call_later(timeout, self.send_append_entries)
+        timeout = randrange(1, 4) * 10 ** (-1 if config.debug else -2)
+        loop = asyncio.get_event_loop()
+        self.append_timer = loop.call_later(timeout, self.send_append_entries)
 
     def on_peer_response_append(self, peer, msg):
         """Handle peer response to append_entries.
@@ -366,8 +359,6 @@ class Leader(State):
             minRequiredServers = 2 # TODO: Dennis int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
             if len(self.signedPrepares[actualMsg['matchIndex']]) >= minRequiredServers:
                 self.log.commit(actualMsg['matchIndex'])
-                # let follower know a new log has been committed
-                self.send_append_entries(True)
                 # send response back to client, followers also need to do this
                 self.send_client_append_response()
         else:
