@@ -133,25 +133,3 @@ class LogManager:
         # the state machine application could be asynchronous
         self.state_machine.apply(self, self.commitIndex)
         logger.debug('State machine: %s', self.state_machine.data)
-        self.compaction_timer_touch()
-
-    def compact(self):
-        del self.compaction_timer
-        if self.commitIndex - self.compacted.count < 60:
-            return
-        logger.debug('Compaction started')
-        not_compacted_log = self[self.state_machine.lastApplied + 1:]
-        self.compacted.data = self.state_machine.data.copy()
-        self.compacted.term = self.term(self.state_machine.lastApplied)
-        self.compacted.count = self.state_machine.lastApplied + 1
-        self.compacted.persist()
-        self.log.replace(not_compacted_log)
-
-        logger.debug('Compacted: %s', self.compacted.data)
-        logger.debug('Log: %s', self.log.data)
-
-    def compaction_timer_touch(self):
-        """Periodically initiates compaction."""
-        if not hasattr(self, 'compaction_timer'):
-            loop = asyncio.get_event_loop()
-            self.compaction_timer = loop.call_later(0.01, self.compact)

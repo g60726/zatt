@@ -35,8 +35,6 @@ class State:
                 'public_keys': config.public_keys, 'clients': config.clients,
                 'client_keys': config.client_keys}
             self.log = LogManager()
-            self._update_cluster()
-        self.stats = TallyCounter(['read', 'write', 'append'])
 
     def data_received_peer(self, peer, msg):
         """Receive peer messages from orchestrator and pass them to the
@@ -51,6 +49,7 @@ class State:
 
         logger.debug('Received %s from %s', actualMsg['type'], peer)
 
+        # TODO: Dennis, there should be some sort of security check here...
         if self.persist['currentTerm'] < actualMsg['term']:
             self.persist['currentTerm'] = actualMsg['term']
             if not type(self) is Follower:
@@ -79,55 +78,18 @@ class State:
 
     def on_client_append(self, protocol, msg):
         """Redirect client to leader upon receiving a client_append message."""
-        # msg = {'type': 'redirect',
-        #        'leader': self.volatile['leaderId']}
-        # protocol.send(msg)
         if self.volatile['leaderId']:
             self.orchestrator.redir_leader( \
                 tuple(self.volatile['leaderId']), msg)
             logger.info('Redirect client %s:%s to leader',
                          *protocol.transport.get_extra_info('peername'))
 
-    def on_client_config(self, protocol, msg):
-        """Redirect client to leader upon receiving a client_config message."""
-        return self.on_client_append(protocol, msg)
-
-    def on_client_diagnostic(self, protocol, msg):
-        """Return internal state to client."""
-        msg = {'status': self.__class__.__name__,
-               'persist': {'votedFor': self.persist['votedFor'],
-                           'currentTerm': self.persist['currentTerm']},
-               'volatile': self.volatile,
-               'log': {'commitIndex': self.log.commitIndex},
-               'stats': self.stats.data}
-        msg['volatile']['cluster'] = list(msg['volatile']['cluster'])
-
-        if type(self) is Leader:
-            msg.update({'leaderStatus':
-                        {'netIndex': tuple(self.nextIndex.items()),
-                         'matchIndex': tuple(self.matchIndex.items()),
-                         'waiting_clients': {k: len(v) for (k, v) in
-                                             self.waiting_clients.items()}}})
-        # TODO: change this?
-        protocol.send(msg)
-
     def on_client_get(self, protocol, msg):
         """Return state machine to client."""
         state_machine = self.log.state_machine.data.copy()
-        self.stats.increment('read')
         self.orchestrator.send_client(msg['client'], \
             {'type': 'result', 'success': True, 'req_id': msg['req_id'], \
                 'data': state_machine})
-
-    def _update_cluster(self, entries=None):
-        """Scans compacted log and log, looking for the latest cluster
-        configuration."""
-        if 'cluster' in self.log.compacted.data:
-            self.volatile['cluster'] = self.log.compacted.data['cluster']
-        for entry in (self.log if entries is None else entries):
-            if entry['data']['key'] == 'cluster':
-                self.volatile['cluster'] = entry['data']['value']
-        self.volatile['cluster'] = tuple(map(tuple, self.volatile['cluster']))
 
     # Given a msg (a dict), sign it an return a list with the strignified msg and its signature
     def sign_message(self, msg):
@@ -208,13 +170,7 @@ class Follower(State):
             self.log.term(msg['prevLogIndex']) == msg['prevLogTerm'])
         success = term_is_current and prev_log_term_match
 
-        if 'compact_data' in msg:
-            self.log = LogManager(compact_count=msg['compact_count'],
-                                  compact_term=msg['compact_term'],
-                                  compact_data=msg['compact_data'])
-            self.volatile['leaderId'] = msg['leaderId']
-            logger.debug('Initialized Log with compact data from Leader')
-        elif success:
+        if success:
             self.log.append_entries(msg['entries'], msg['prevLogIndex'])
             # for everything log from self.log.commitIndex to msg['leaderCommit'],
             # need to check if this log's signedPrepares before committing
@@ -231,12 +187,9 @@ class Follower(State):
                     break
             self.volatile['leaderId'] = msg['leaderId']
             logger.debug('Log index is now %s', self.log.index)
-            self.stats.increment('append', len(msg['entries']))
         else:
             logger.warning('Could not append entries. cause: %s', 'wrong\
                 term' if not term_is_current else 'prev log term mismatch')
-
-        self._update_cluster()
 
         if not msg['isCommit']: # if it's a commit, don't need to notify the leader that commit is successful
             resp = {'type': 'response_append', 'success': success,
@@ -270,7 +223,6 @@ class Follower(State):
                         {'type': 'result', 'success': True, \
                             'req_id': client['req_id']})
                     logger.debug('Sent successful response to client')
-                    self.stats.increment('write')
                 to_delete.append(client_index)
         for index in to_delete:
             del self.waiting_clients[index]
@@ -378,11 +330,6 @@ class Leader(State):
                                        self.nextIndex[peer] + 100]}
             msg.update({'prevLogTerm': self.log.term(msg['prevLogIndex'])})
 
-            if self.nextIndex[peer] <= self.log.compacted.index:
-                msg.update({'compact_data': self.log.compacted.data,
-                            'compact_term': self.log.compacted.term,
-                            'compact_count': self.log.compacted.count})
-
             logger.debug('Sending %s entries to %s. Start index %s',
                          len(msg['entries']), peer, self.nextIndex[peer])
 
@@ -464,44 +411,6 @@ class Leader(State):
                     self.orchestrator.send_client(client['addr'], \
                         {'type': 'result', 'success': True, \
                             'req_id': client['req_id']})
-                    self.stats.increment('write')
                 to_delete.append(client_index)
         for index in to_delete:
             del self.waiting_clients[index]
-
-    def on_client_config(self, protocol, msg):
-        """Push new cluster config. When uncommitted cluster changes
-        are already present, retries until they are committed
-        before proceding."""
-        pending_configs = tuple(filter(lambda x: x['data']['key'] == 'cluster',
-                                self.log[self.log.commitIndex + 1:]))
-        if pending_configs:
-            timeout = randrange(1, 4) * 10 ** (0 if config.debug else -1)
-            loop = asyncio.get_event_loop()
-            self.config_timer = loop.\
-                call_later(timeout, self.on_client_config, protocol, msg)
-            return
-
-        success = True
-        cluster = set(self.volatile['cluster'])
-        peer = (msg['address'], int(msg['port']))
-        if msg['action'] == 'add' and peer not in cluster:
-            logger.info('Adding node %s', peer)
-            cluster.add(peer)
-            self.nextIndex[peer] = 0
-            self.matchIndex[peer] = 0
-        elif msg['action'] == 'delete' and peer in cluster:
-            logger.info('Removing node %s', peer)
-            cluster.remove(peer)
-            del self.nextIndex[peer]
-            del self.matchIndex[peer]
-        else:
-            success = False
-        if success:
-            self.log.append_entries([
-                {'term': self.persist['currentTerm'],
-                 'data':{'key': 'cluster', 'value': tuple(cluster),
-                         'action': 'change'}}],
-                self.log.index)
-            self.volatile['cluster'] = cluster
-        protocol.send({'type': 'result', 'success': success})
