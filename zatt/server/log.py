@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 class Log(collections.UserList):
-    def __init__(self, erase_log=False):
+    def __init__(self, filename, erase_log=False):
         super().__init__()
-        self.path = os.path.join(config.storage, 'log')
+        self.path = os.path.join(config.storage, filename)
         #  load
         logger.debug('Initializing log')
         if erase_log and os.path.isfile(self.path):
@@ -81,15 +81,19 @@ class DictStateMachine(collections.UserDict):
 class LogManager:
     """Instantiate and manage the components of the "Log" subsystem.
     That is: the log, the compactor and the state machine."""
-    def __init__(self, compact_count=0, compact_term=None, compact_data={},
+    def __init__(self, filename, compact_count=0, compact_term=None, compact_data={},
                  machine=DictStateMachine):
         erase_log = compact_count or compact_term or compact_data
-        self.log = Log(erase_log)
+        self.log = Log(filename, erase_log)
         self.compacted = Compactor(compact_count, compact_term, compact_data)
-        self.state_machine = machine(data=self.compacted.data,
-                                     lastApplied=self.compacted.index)
+        if machine:
+            self.state_machine = machine(data=self.compacted.data,
+                                         lastApplied=self.compacted.index)
+        else:
+            self.state_machine = None
         self.commitIndex = self.compacted.index + len(self.log)
-        self.state_machine.apply(self, self.commitIndex)
+        if self.state_machine:
+            self.state_machine.apply(self, self.commitIndex)
 
     def __getitem__(self, index):
         """Get item or slice from the log, based on absolute log indexes.
@@ -125,8 +129,7 @@ class LogManager:
             logger.debug('Appending. New log: %s', self.log.data)
 
     def commit(self, leaderCommit):
-        # enforce serial commits
-        if leaderCommit == self.commitIndex + 1:
+        if leaderCommit > self.commitIndex:
             self.commitIndex = min(leaderCommit, self.index)  # no overshoots
             logger.debug('Advancing commit to %s', self.commitIndex)
             # above is the actual commit operation, just incrementing the counter!

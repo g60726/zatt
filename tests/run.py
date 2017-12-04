@@ -116,39 +116,43 @@ class FailureModeAppendTest(unittest.TestCase):
         self.assertEqual(d['adams'], 'the hitchhiker guide')
         self.pool.start(0)
         self.pool.stop(1)
+        d['0'] = '1'
         self.assertEqual(d['adams'], 'the hitchhiker guide')
         self.pool.start(1)
         self.pool.stop(2)
+        d['1'] = '0'
         self.assertEqual(d['adams'], 'the hitchhiker guide')
         del d
 
-    # def test_append_write_failure_complex(self):
-    #     print('Append test - Write Failure Complex')
-    #     d = DistributedDict('127.0.0.1', 9119)
-    #     d['adams'] = 'the hitchhiker guide'
-    #     self.pool.stop(0)
-    #     self.assertEqual(d['adams'], 'the hitchhiker guide')
-    #     del d['adams']
-    #     self.pool.start(0)
-    #     self.pool.stop(1)
-    #     d['foo'] = 'bar'
-    #     self.assertEqual(d['adams'], None)
-    #     self.assertEqual(d['foo'], 'bar')
-    #     self.pool.start(1)
-    #     self.pool.stop(2)
-    #     d['bar'] = 'foo'
-    #     del d['foo']
-    #     self.assertEqual(d['adams'], None)
-    #     self.assertEqual(d['foo'], None)
-    #     self.assertEqual(d['bar'], 'foo')
-    #     del d['bar']
-    #     self.pool.start(2)
-    #     self.pool.stop(0)
-    #     self.assertEqual(d['adams'], None)
-    #     self.assertEqual(d['foo'], None)
-    #     self.assertEqual(d['bar'], None)
-    #     self.pool.start(0)
-    #     del d
+    def test_append_write_failure_complex(self):
+        print('Append test - Write Failure Complex')
+        d = DistributedDict('127.0.0.1', 9119)
+        d['adams'] = 'the hitchhiker guide'
+        self.pool.stop(0)
+        self.assertEqual(d['adams'], 'the hitchhiker guide')
+        del d['adams']
+        self.pool.start(0)
+        self.pool.stop(1)
+        d['foo'] = 'bar'
+        self.assertEqual(d['adams'], None)
+        self.assertEqual(d['foo'], 'bar')
+        self.pool.start(1)
+        self.pool.stop(2)
+        d['bar'] = 'foo'
+        del d['foo']
+        self.assertEqual(d['adams'], None)
+        self.assertEqual(d['foo'], None)
+        self.assertEqual(d['bar'], 'foo')
+        del d['bar']
+        self.pool.start(2)
+        self.pool.stop(0)
+        d['1'] = '0'
+        self.assertEqual(d['adams'], None)
+        self.assertEqual(d['foo'], None)
+        self.assertEqual(d['bar'], None)
+        self.assertEqual(d['1'], '0')
+        self.pool.start(0)
+        del d
 
 # class BasicCompactTest(unittest.TestCase):
 #     def setUp(self):

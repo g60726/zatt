@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 class DistributedDict(collections.UserDict, AbstractClient):
     """Client for zatt instances with dictionary based state machines."""
-    def __init__(self, addr, port, append_retry_attempts=5,
+    def __init__(self, addr, port, append_retry_attempts=3,
                  refresh_policy=RefreshPolicyAlways()):
         super().__init__()
         self.data['cluster'] = [(addr, port)]

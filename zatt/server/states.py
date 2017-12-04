@@ -35,8 +35,8 @@ class State:
                 'address': config.address, 'private_key': config.private_key,
                 'public_keys': config.public_keys, 'clients': config.clients,
                 'client_keys': config.client_keys}
-            self.log = LogManager()
-            self.sig_log = LogManager()
+            self.log = LogManager('log')
+            self.sig_log = LogManager('sigs', machine=None)
 
     def data_received_peer(self, peer, msg):
         """Receive peer messages from orchestrator and pass them to the
@@ -173,9 +173,9 @@ class Follower(State):
                 'term': msg['term'], \
                 'logIndex': msg['logIndex'], \
                 'entry': entry, \
-                'entrySig': sig}
+                'entrySig': str(sig)}
         resp = self.sign_message(resp)
-        self.on_peer_response_append(self.volatile['leaderId'], resp)
+        self.orchestrator.send_peer(self.volatile['leaderId'], resp)
 
     def on_peer_append_entries(self, peer, msg):
         """ Manages incoming log entries from the Leader """
@@ -183,12 +183,13 @@ class Follower(State):
         self.volatile['leaderId'] = msg['leaderId']
 
         term_is_current = msg['term'] >= self.persist['currentTerm']
-        prev_term = msg['prevLogEntry']['term']
-        prev_log_index = msg['prevLogEntry']['log_index']
-        prev_log_term_match = prev_term is None or \
-            (self.log.index >=  prev_log_index and \
-             self.log.term(prev_log_index) == prev_term and \
-             len(msg['prevLogSigs']) >= 2)
+        prev_log_term_match = True
+        if msg['prevLogEntry'] is not None:
+            prev_term = msg['prevLogEntry']['term']
+            prev_log_index = msg['prevLogEntry']['log_index']
+            prev_log_term_match = (self.log.index >  prev_log_index and \
+                 self.log.term(prev_log_index+1) == prev_term and \
+                 len(msg['prevLogSigs']) >= 2)
         # TODO: verify signatures on the provided entry
 
         success = term_is_current and prev_log_term_match
@@ -201,14 +202,14 @@ class Follower(State):
                     entry = msg['entries'][index]
                     log_idx = entry['log_index']
                     # record entries, signatures, and persist the proof
-                    self.log.append_entries(entry, log_idx)
-                    self.sig_log.append_entries(msg['sigs'][index], log_idx)
-                    self.log.commit(log_idx)
+                    self.log.append_entries([entry], log_idx)
+                    self.sig_log.append_entries([msg['sigs'][index]], log_idx)
+                    self.log.commit(log_idx+1)
+                    logger.info('Log index is now %s', self.log.commitIndex)
                 else:
                     logger.info("Invalid signature!!")
                     break
             self.send_client_append_response()
-            logger.debug('Log index is now %s', self.log.commitIndex)
         # could not append to log
         else:
             logger.warning('Could not append entries. cause: %s', 'wrong\
@@ -240,7 +241,7 @@ class Follower(State):
         """Respond to client upon commitment of log entries."""
         to_delete = []
         for client_index, clients in self.waiting_clients.items():
-            if client_index <= self.log.commitIndex:
+            if client_index < self.log.commitIndex:
                 for client in clients:
                     self.orchestrator.send_client(client['addr'], \
                         {'type': 'result', 'success': True, \
@@ -305,23 +306,6 @@ class Leader(State):
         self.signedPrepares = {}
         self.send_append_entries()
 
-        # TODO: eliminate need for this reserved key
-        if 'cluster' not in self.log.state_machine:
-            self.log.append_entries([
-                {'term': self.persist['currentTerm'],
-                 'data':{'key': 'cluster',
-                         'value': tuple(self.volatile['cluster']),
-                         'action': 'change'}}],
-                self.log.index)
-            self.log.commit(self.log.index)
-            self.sig_log.append_entries([
-                {'term': self.persist['currentTerm'],
-                 'data':{'key': 'cluster',
-                         'value': tuple(self.volatile['cluster']),
-                         'action': 'change'}}],
-                self.log.index)
-            self.sig_log.commit(self.log.index)
-
     def teardown(self):
         """ Stop timers before changing state """
         self.append_timer.cancel()
@@ -339,12 +323,17 @@ class Leader(State):
         for peer in self.volatile['cluster']:
             if peer == self.volatile['address']:
                 continue
+            prevLogEntry = None
+            prevLogSigs = None
+            if self.nextIndex[peer] > 0:
+                prevLogEntry = self.log[self.nextIndex[peer] - 1]
+                prevLogSigs = self.sig_log[self.nextIndex[peer] - 1]
             msg = {'type': 'append_entries',
                    'term': self.persist['currentTerm'],
                    'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
-                   'prevLogEntry': self.log[self.nextIndex[peer] - 1],
-                   'prevLogSigs': self.sig_log[self.nextIndex[peer] - 1],
+                   'prevLogEntry': prevLogEntry,
+                   'prevLogSigs': prevLogSigs,
                    'entries': self.log[self.nextIndex[peer]: \
                                        self.nextIndex[peer] + 100], \
                    'sigs': self.sig_log[self.nextIndex[peer]: \
@@ -380,34 +369,32 @@ class Leader(State):
         # store peer's signed prepare
         idx = msg['logIndex']
         if idx in self.signedPrepares:
+            # TODO: also check that entries match up
             if peer not in self.signedPrepares[idx]:
                 sig = (json.loads(msg['entry']), str(msg['entrySig']))
-                self.signedPrepares[idx]['sigs'][peer] = sig
+                self.signedPrepares[idx]['sigs'][self.peerToString(peer)] = sig
 
         # try to commit entries with a quorum of signatures
+        to_delete = []
         for log_idx in self.signedPrepares:
             totalServers = len(self.volatile['cluster'])
             minRequiredServers = 2 # TODO: int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
             if len(self.signedPrepares[log_idx]['sigs']) >= minRequiredServers:
-                commit_idx = self.log.commit(log_idx)
-                if commit_idx >= log_idx:
+                commit_idx = self.log.commit(log_idx+1)
+                if commit_idx > log_idx:
                     # record signatures and persist the proof
                     self.sig_log.append_entries( \
-                            self.signedPrepares[log_idx]['sigs'], log_idx)
-                    self.sig_log.commit(log_idx)
-                    del self.signedPrepares[log_idx]
+                            [self.signedPrepares[log_idx]['sigs']], log_idx)
+                    to_delete.append(log_idx)
 
                     # send response back to client
                     self.send_client_append_response()
+        for log_idx in to_delete:
+            del self.signedPrepares[log_idx]
 
 
     def on_client_append(self, protocol, msg):
         # TODO: verify sig of client msg
-        # this is the only reserved key TODO: get rid of need for this
-        if msg['data']['key'] == 'cluster':
-            self.orchestrator.send_client(msg['client'], \
-                {'type': 'result', 'success': False, 'req_id': msg['req_id']})
-
         # keep track of the new client (to respond to upon commit)
         new_client = {'addr': msg['client'], 'req_id': msg['req_id']}
         if self.log.index in self.waiting_clients:
@@ -416,6 +403,7 @@ class Leader(State):
             self.waiting_clients[self.log.index] = [new_client]
 
         # append new entry to tip of Leader log
+        log_index = self.log.index
         entry = {'term': self.persist['currentTerm'], \
                  'data': msg['data'], \
                  'log_index': self.log.index}
@@ -425,9 +413,9 @@ class Leader(State):
         prepare = {'type': 'append_prepare', \
                    'term': self.persist['currentTerm'], \
                    'leaderId': self.volatile['address'], \
-                   'logIndex': self.log.index, \
+                   'logIndex': log_index, \
                    'message': msg} # TODO: does this send?
-        self.signedPrepares[self.log.index] = {'prepare_msg': prepare, \
+        self.signedPrepares[log_index] = {'prepare_msg': prepare, \
                                                 'sigs': {}}
 
         # TODO: delegate to periodic function
@@ -440,18 +428,17 @@ class Leader(State):
         # respond with successful prepare to self
         (entry, sig) = self.sign_message(entry)
         resp = {'type': 'response_prepare', \
-                'term': msg['term'], \
-                'logIndex': msg['logIndex'], \
+                'term': self.persist['currentTerm'], \
+                'logIndex': log_index, \
                 'entry': entry, \
-                'entrySig': sig}
-        resp = self.sign_message(resp)
-        self.on_peer_response_append(self.volatile['address'], resp)
+                'entrySig': str(sig)}
+        self.on_peer_response_prepare(self.volatile['address'], resp)
 
     def send_client_append_response(self):
         """ Respond to client upon commitment of log entries """
         to_delete = []
         for client_index, clients in self.waiting_clients.items():
-            if client_index <= self.log.commitIndex:
+            if client_index < self.log.commitIndex:
                 for client in clients:
                     # TODO: sign message
                     self.orchestrator.send_client(client['addr'], \
@@ -460,3 +447,6 @@ class Leader(State):
                 to_delete.append(client_index)
         for index in to_delete:
             del self.waiting_clients[index]
+
+    def peerToString(self, peer):
+        return peer[0] + ":" + str(peer[1])
