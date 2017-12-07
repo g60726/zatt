@@ -7,11 +7,9 @@ logger = logging.getLogger(__name__)
 
 class DistributedDict(collections.UserDict, AbstractClient):
     """Client for zatt instances with dictionary based state machines."""
-    def __init__(self, addr, port, append_retry_attempts=3,
-                 refresh_policy=RefreshPolicyAlways()):
+    def __init__(self, addr, port, refresh_policy=RefreshPolicyAlways()):
         super().__init__()
         self.data['cluster'] = [(addr, port)]
-        self.append_retry_attempts = append_retry_attempts
         self.refresh_policy = refresh_policy
         self.refresh(force=True)
 
@@ -38,19 +36,15 @@ class DistributedDict(collections.UserDict, AbstractClient):
 
     def refresh(self, force=False):
         if force or self.refresh_policy.can_update():
-            for attempt in range(self.append_retry_attempts):
-                response = super()._get_state()
-                if response['success']:
-                    self.data['state'] = response['data']
-                    return
-            logger.info("Refresh timed out!")
+            response = super()._get_state()
+            if response['success']:
+                self.data['state'] = response['data']
+                return
 
     def _append_log(self, payload):
-        for attempt in range(self.append_retry_attempts):
-            response = super()._append_log(payload)
-            if response['success']:
-                return response
-        logger.info("Set Item timed out!")
+        response = super()._append_log(payload)
+        if response['success']:
+            return response
 
 if __name__ == '__main__':
     import sys

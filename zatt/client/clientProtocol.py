@@ -31,31 +31,35 @@ class State:
         msg = message.copy()
         msg['client'] = self.orchestrator.config.client_address
         msg['req_id'] = self.orchestrator.req_id
+        logger.debug(msg)
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(address)
             sock.send(msgpack.packb(msg, use_bin_type=True))
-            logger.debug(msg)
         except socket.error:
             return False
         finally:
             sock.close()
         return True
 
+    def send_message(self, message):
+        if message['type'] == 'get':
+            self.broadcast_server_message(message)
+        elif message['type'] == 'append':
+            self.send_leader_message(message)
+        else:
+            self.send_leader_message(message)
+
 class Idle(State):
     def __init__(self, orchestrator=None):
         super().__init__(orchestrator)
+        self.orchestrator.req_id += 1
 
     def data_received_command(self, transport, message):
         self.orchestrator.transport = transport
         self.orchestrator.message = message
 
-        if message['type'] == 'get':
-            super().broadcast_server_message(message)
-        elif message['type'] == 'append':
-            super().send_leader_message(message)
-        else:
-            super().send_leader_message(message)
+        super().send_message(message)
 
         self.orchestrator.change_state(InProgress)
         self.orchestrator.state.start_timer()
@@ -64,11 +68,11 @@ class InProgress(State):
     def __init__(self, orchestrator=None):
         super().__init__(orchestrator)
         self.responses = {}
-        self.orchestrator.req_id += 1
+        self.retry_counter = 0
 
     def data_received_server(self, transport, message):
         logger.debug(message)
-        if message['req_id'] == self.orchestrator.req_id-1:
+        if message['req_id'] == self.orchestrator.req_id:
             self.responses[tuple(message['server_address'])] = message
         if len(self.responses) >= self.orchestrator.quorum:
             self.request_timer.cancel()
@@ -82,19 +86,27 @@ class InProgress(State):
             loop.call_later(timeout, self.timed_out)
 
     def timed_out(self):
-        super().broadcast_server_message({'type': 'timeout'})
-        # give up
-        self.orchestrator.change_state(Idle)
-        self.orchestrator.transport.send( \
-            {'type': 'result', 'success': False})
+        self.retry_counter += 1
+        if self.retry_counter > self.orchestrator.retry_attempts:
+            super().broadcast_server_message({'type': 'timeout'})
+            self.orchestrator.change_state(Idle)
+            self.orchestrator.transport.send( \
+                {'type': 'result', 'success': False})
+            logger.info("Time out in client protocol!!")
+        else:
+            # Retry
+            logger.info("Retransmitting: " + str(self.retry_counter))
+            super().send_message(self.orchestrator.message)
+            self.start_timer()
 
 class Orchestrator():
     def __init__(self, config):
-        self.state = Idle(orchestrator=self)
         self.server_cluster = list(config.cluster)
         self.config = config
         self.req_id = 0
+        self.retry_attempts = 3
         self.quorum = 2 # TODO: Dennis calculate based on the server_cluster
+        self.state = Idle(orchestrator=self)
 
     def change_state(self, new_state):
         self.state = new_state(orchestrator=self)

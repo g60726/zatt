@@ -129,7 +129,8 @@ class LogManager:
             logger.debug('Appending. New log: %s', self.log.data)
 
     def commit(self, leaderCommit):
-        if leaderCommit > self.commitIndex:
+        # Serialize commits
+        if leaderCommit == self.commitIndex + 1:
             self.commitIndex = min(leaderCommit, self.index)  # no overshoots
             logger.debug('Advancing commit to %s', self.commitIndex)
             # above is the actual commit operation, just incrementing the counter!

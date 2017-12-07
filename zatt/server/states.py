@@ -37,6 +37,7 @@ class State:
                 'client_keys': config.client_keys}
             self.log = LogManager('log')
             self.sig_log = LogManager('sigs', machine=None)
+        self.waiting_clients = {}
 
     def data_received_peer(self, peer, msg):
         """Receive peer messages from orchestrator and pass them to the
@@ -90,6 +91,34 @@ class State:
             {'type': 'result', 'success': True, 'req_id': msg['req_id'], \
                 'data': state_machine})
 
+    def send_client_append_response(self):
+        """ Respond to client upon commitment of log entries """
+        for client_addr, client_req in self.waiting_clients.items():
+            if client_req['log_idx'] < self.log.commitIndex:
+                # TODO: sign message
+                self.orchestrator.send_client(client_addr, \
+                    {'type': 'result', 'success': True, \
+                        'req_id': client_req['req_id']})
+
+    def store_client_new_req(self, msg):
+        # keep track of the new client (to respond to upon commit or retransmit)
+        new_req = {'log_idx': self.log.index, 'req_id': msg['req_id']}
+        client_addr = tuple(msg['client'])
+        if client_addr in self.waiting_clients:
+            curr_req = self.waiting_clients[client_addr]
+            if curr_req['req_id'] != new_req['req_id']:
+                # client providing new request
+                self.waiting_clients[client_addr] = new_req
+                return True
+            else:
+                # client requesting retransmit
+                self.send_client_append_response()
+                return False
+        else:
+            self.waiting_clients[client_addr] = new_req
+            return True
+        return False
+
     # Given a msg (a dict), sign it an return a list with the strignified msg and its signature
     def sign_message(self, msg):
         signature = crypto.sign_message(json.dumps(msg), self.volatile['private_key'])
@@ -103,17 +132,10 @@ class Follower(State):
         super().__init__(old_state, orchestrator)
         self.persist['votedFor'] = None
         self.restart_election_timer()
-        self.waiting_clients = {}
 
     def teardown(self):
         """Stop timers before changing state."""
         self.election_timer.cancel()
-        for clients in self.waiting_clients.values():
-            for client in clients:
-                self.orchestrator.send_client(client['addr'], \
-                    {'type': 'result', 'success': False, \
-                        'req_id': client['req_id']})
-                logger.error('Sent unsuccessful response to client')
 
     def restart_election_timer(self):
         """Delays transition to the Candidate state by timer."""
@@ -152,30 +174,25 @@ class Follower(State):
         # TODO: verify client signature
         client_msg = msg['message']
 
-        # keep track of the new client (to respond to upon commit)
-        new_client = {'addr': client_msg['client'], \
-                      'req_id': client_msg['req_id']}
-        if msg['logIndex'] in self.waiting_clients:
-            self.waiting_clients[msg['logIndex']].append(new_client)
-        else:
-            self.waiting_clients[msg['logIndex']] = [new_client]
+        new_req = super().store_client_new_req(client_msg)
 
-        # append new entry at tip of log
-        entry = {'term': msg['term'], \
-                 'data': client_msg['data'], \
-                 'log_index': msg['logIndex']}
-        self.log.append_entries([entry], msg['logIndex'])
+        if new_req:
+            # append new entry at tip of log
+            entry = {'term': msg['term'], \
+                     'data': client_msg['data'], \
+                     'log_index': msg['logIndex']}
+            self.log.append_entries([entry], msg['logIndex'])
 
-        # respond with successful prepare to leader
-        self.volatile['leaderId'] = msg['leaderId']
-        (entry, sig) = self.sign_message(entry)
-        resp = {'type': 'response_prepare', \
-                'term': msg['term'], \
-                'logIndex': msg['logIndex'], \
-                'entry': entry, \
-                'entrySig': str(sig)}
-        resp = self.sign_message(resp)
-        self.orchestrator.send_peer(self.volatile['leaderId'], resp)
+            # respond with successful prepare to leader
+            self.volatile['leaderId'] = msg['leaderId']
+            (entry, sig) = self.sign_message(entry)
+            resp = {'type': 'response_prepare', \
+                    'term': msg['term'], \
+                    'logIndex': msg['logIndex'], \
+                    'entry': entry, \
+                    'entrySig': str(sig)}
+            resp = self.sign_message(resp)
+            self.orchestrator.send_peer(self.volatile['leaderId'], resp)
 
     def on_peer_append_entries(self, peer, msg):
         """ Manages incoming log entries from the Leader """
@@ -197,8 +214,11 @@ class Follower(State):
         # attempt to append to log
         if success:
             for index in range(len(msg['sigs'])):
-                if len(msg['sigs'][index]) >= 2:
-                # TODO: verify signatures on the provided entry
+                sig_check = self.verify_prepares( \
+                    msg['entries'][index], \
+                    msg['sigs'][index], msg)
+
+                if len(msg['sigs'][index]) >= 2 and sig_check:
                     entry = msg['entries'][index]
                     log_idx = entry['log_index']
                     # record entries, signatures, and persist the proof
@@ -209,7 +229,7 @@ class Follower(State):
                 else:
                     logger.info("Invalid signature!!")
                     break
-            self.send_client_append_response()
+            super().send_client_append_response()
         # could not append to log
         else:
             logger.warning('Could not append entries. cause: %s', 'wrong\
@@ -223,33 +243,38 @@ class Follower(State):
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
-    # # TODO: implement this
-    # # signedPrepares is a list of tuples = (string representation of msg, signature, and sender)
-    # def checkSignedPrepares(self, index, signedPrepares):
-    #     for signedPrepare in signedPrepares:
-    #         isValid = crypto.verify_message(signedPrepare[0], self.volatile['public_keys'][tuple(signedPrepare[2])], eval(signedPrepare[1]))
-    #         if not isValid:
-    #             logger.error('OMGGGGGGGGGGGGGGGG')
-    #             return False
-    #         msg = json.loads(signedPrepare[0])
-    #         if not(msg['type'] == 'response_append' and msg['success']):
-    #             logger.error('OMGGGGGGGGGGGGGGGG2222222222222222')
-    #             return False
-    #     return True
+    def verify_prepares(self, entry, prepares, msg):
+        val_entry = json.dumps(entry)
+        sig_check = True
+        for key in prepares:
+            data = prepares[key][0]
+            sig = prepares[key][1]
+            sender = self.string_to_peer(key)
 
-    def send_client_append_response(self):
-        """Respond to client upon commitment of log entries."""
-        to_delete = []
-        for client_index, clients in self.waiting_clients.items():
-            if client_index < self.log.commitIndex:
-                for client in clients:
-                    self.orchestrator.send_client(client['addr'], \
-                        {'type': 'result', 'success': True, \
-                            'req_id': client['req_id']})
-                    logger.debug('Sent successful response to client')
-                to_delete.append(client_index)
-        for index in to_delete:
-            del self.waiting_clients[index]
+            if not self.verify_sig(sender, data, sig):
+                sig_check = False
+                break
+
+            if json.dumps(data) != val_entry:
+                logger.info(json.dumps(data))
+                logger.info(val_entry)
+                logger.info(msg)
+                for i in range(self.log.index):
+                    logger.info(self.log[i])
+                sig_check = False
+                break
+            
+        return sig_check
+
+    def verify_sig(self, peer, data, sig):
+        return crypto.verify_message(
+                    json.dumps(data), \
+                    self.volatile['public_keys'][peer], \
+                    eval(sig))
+
+    def string_to_peer(self, str):
+        arr = str.split(':')
+        return (arr[0], int(arr[1]))
 
 
 class Candidate(Follower):
@@ -302,8 +327,7 @@ class Leader(State):
         self.volatile['leaderId'] = self.volatile['address']
         self.matchIndex = {p: 0 for p in self.volatile['cluster']}
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
-        self.waiting_clients = {}
-        self.signedPrepares = {}
+        self.prepares = {}
         self.send_append_entries()
 
     def teardown(self):
@@ -311,12 +335,6 @@ class Leader(State):
         self.append_timer.cancel()
         if hasattr(self, 'config_timer'):
             self.config_timer.cancel()
-        for clients in self.waiting_clients.values():
-            for client in clients:
-                self.orchestrator.send_client(client['addr'], \
-                    {'type': 'result', 'success': False, \
-                        'req_id': client['req_id']})
-                logger.error('Sent unsuccessful response to client')
 
     def send_append_entries(self):
         # send append_entries with next needed log entries to each follower
@@ -368,55 +386,73 @@ class Leader(State):
     def on_peer_response_prepare(self, peer, msg):
         # store peer's signed prepare
         idx = msg['logIndex']
-        if idx in self.signedPrepares:
-            # TODO: also check that entries match up
-            if peer not in self.signedPrepares[idx]:
-                sig = (json.loads(msg['entry']), str(msg['entrySig']))
-                self.signedPrepares[idx]['sigs'][self.peerToString(peer)] = sig
+        if idx in self.prepares and peer not in self.prepares[idx]:
+            if self.log.index > idx:
+                if msg['entry'] == json.dumps(self.log[idx+1]):
+                    sig = (json.loads(msg['entry']), str(msg['entrySig']))
+                    self.prepares[idx]['sigs'][self.peer_to_string(peer)] = sig
+                else:
+                    logger.info(msg['entry'])
+                    logger.info(self.log[idx+1])
+            else:
+                logger.info(msg)
+                logger.info(self.log[self.log.index])
+                logger.info(self.waiting_clients)
 
         # try to commit entries with a quorum of signatures
         to_delete = []
-        for log_idx in self.signedPrepares:
+        for log_idx in self.prepares:
             totalServers = len(self.volatile['cluster'])
             minRequiredServers = 2 # TODO: int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
-            if len(self.signedPrepares[log_idx]['sigs']) >= minRequiredServers:
+            if len(self.prepares[log_idx]['sigs']) >= minRequiredServers:
                 commit_idx = self.log.commit(log_idx+1)
                 if commit_idx > log_idx:
                     # record signatures and persist the proof
                     self.sig_log.append_entries( \
-                            [self.signedPrepares[log_idx]['sigs']], log_idx)
+                            [self.prepares[log_idx]['sigs']], log_idx)
                     to_delete.append(log_idx)
 
                     # send response back to client
-                    self.send_client_append_response()
+                    super().send_client_append_response()
         for log_idx in to_delete:
-            del self.signedPrepares[log_idx]
+            del self.prepares[log_idx]
 
 
     def on_client_append(self, protocol, msg):
         # TODO: verify sig of client msg
-        # keep track of the new client (to respond to upon commit)
-        new_client = {'addr': msg['client'], 'req_id': msg['req_id']}
-        if self.log.index in self.waiting_clients:
-            self.waiting_clients[self.log.index].append(new_client)
-        else:
-            self.waiting_clients[self.log.index] = [new_client]
+        new_req = super().store_client_new_req(msg)
 
         # append new entry to tip of Leader log
-        log_index = self.log.index
-        entry = {'term': self.persist['currentTerm'], \
-                 'data': msg['data'], \
-                 'log_index': self.log.index}
-        self.log.append_entries([entry], self.log.index)
+        log_index = 0
+        if new_req:
+            log_index = self.log.index
+            entry = {'term': self.persist['currentTerm'], \
+                     'data': msg['data'], \
+                     'log_index': self.log.index}
+            self.log.append_entries([entry], self.log.index)
+            logger.info("Received new req, appending to " + str(log_index))
+        else:
+            log_index = self.waiting_clients[tuple(msg['client'])]['log_idx']
+            logger.info("Retransmitting req at log index: " + str(log_index))
 
         # put together the prepare message
         prepare = {'type': 'append_prepare', \
                    'term': self.persist['currentTerm'], \
                    'leaderId': self.volatile['address'], \
                    'logIndex': log_index, \
-                   'message': msg} # TODO: does this send?
-        self.signedPrepares[log_index] = {'prepare_msg': prepare, \
+                   'message': msg}
+
+        if new_req:
+            self.prepares[log_index] = {'prepare_msg': prepare, \
                                                 'sigs': {}}
+            # respond with successful prepare to self
+            (entry, sig) = self.sign_message(entry)
+            resp = {'type': 'response_prepare', \
+                    'term': self.persist['currentTerm'], \
+                    'logIndex': log_index, \
+                    'entry': entry, \
+                    'entrySig': str(sig)}
+            self.on_peer_response_prepare(self.volatile['address'], resp)
 
         # TODO: delegate to periodic function
         # tell followers to prepare new entry
@@ -425,28 +461,5 @@ class Leader(State):
                 continue
             self.orchestrator.send_peer(peer, self.sign_message(prepare))
 
-        # respond with successful prepare to self
-        (entry, sig) = self.sign_message(entry)
-        resp = {'type': 'response_prepare', \
-                'term': self.persist['currentTerm'], \
-                'logIndex': log_index, \
-                'entry': entry, \
-                'entrySig': str(sig)}
-        self.on_peer_response_prepare(self.volatile['address'], resp)
-
-    def send_client_append_response(self):
-        """ Respond to client upon commitment of log entries """
-        to_delete = []
-        for client_index, clients in self.waiting_clients.items():
-            if client_index < self.log.commitIndex:
-                for client in clients:
-                    # TODO: sign message
-                    self.orchestrator.send_client(client['addr'], \
-                        {'type': 'result', 'success': True, \
-                            'req_id': client['req_id']})
-                to_delete.append(client_index)
-        for index in to_delete:
-            del self.waiting_clients[index]
-
-    def peerToString(self, peer):
+    def peer_to_string(self, peer):
         return peer[0] + ":" + str(peer[1])
