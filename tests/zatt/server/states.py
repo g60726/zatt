@@ -120,6 +120,7 @@ class Follower(State):
         self.restart_election_timer()
         self.ID = ID
         self.on_election = False
+        self.volatile['address'] = self.ID
         #self.nextTermToVote
         #self.track = {'term':, 'termToVote':}
         #v mode R is preset candidate
@@ -152,7 +153,7 @@ class Follower(State):
     def start_vote(self):
         self.on_election = True
         msg = {'type': 'start_vote',
-               'voteGranted': granted,
+               'voteGranted': True,
                'term': self.persist['currentTerm'],
                'votedFor':self.persist['votedFor'],
                'lastLogTerm': self.log.term(),
@@ -195,11 +196,11 @@ class Follower(State):
         if granted and transform:
                 self.orchestrator.change_state(Candidate)
         
-            '''
+        '''
             method = getattr(self, 'on_candy_' + msg['type'], None) #msg['type'] = start_vote
             if method:
                 method(msg)
-            '''
+        '''
     #follower finishes election
     def on_peer_finish_election(self,msg):
         self.on_election = False
@@ -272,25 +273,27 @@ class Candidate(Follower):
             self.persist['votedFor'] = self.volatile['address']
             self.on_peer_response_vote(
                 self.volatile['address'], {'voteGranted': True})
+        #self.votes_count += 1
         
         loop = asyncio.get_event_loop()
         loop.call_soon(vote_self)
     
     def on_peer_request_vote(self,peer, msg):
-        #if candidate term is smaller than peer's term, stand down
-        if self.persist['currentTerm'] < msg['term']:
+        #if candidate term is smaller than peer's term, send vote and stand down
+        if self.persist['currentTerm'] <= msg['term']:
             self.orchestrator.change_state(Follower)
-        else:
-            #vote back to senders if fullfilled conditions
             can_vote = self.persist['votedFor'] == msg['candidateId']
             index_is_current = (msg['lastLogTerm'] > self.log.term() or (msg['lastLogTerm'] == self.log.term() and
                                 msg['lastLogIndex'] >= self.log.index))
             granted = can_vote and index_is_current
-                                                                     
             if granted:
-                logger.debug('Voting for %s. Term:%s Vote:%s Index:%s',peer, term_is_current, can_vote,index_is_current)
                 response = {'type': 'response_vote', 'voteGranted': granted,'term': self.persist['currentTerm']}
                 self.orchestrator.send_peer(peer, response)
+            self.orchestrator.change_state(Follower)
+        #else tell the sender candidate stand down
+        else:
+            response = {'type': 'response_vote', 'voteGranted': False,'term': self.persist['currentTerm']}
+            self.orchestrator.send_peer(peer, response)
 
     def send_vote_requests(self):
         """Ask peers for votes."""
@@ -315,18 +318,23 @@ class Candidate(Follower):
     
     def on_peer_response_vote(self, peer, msg):
         """Register peers votes, transition to Leader upon majority vote."""
-        self.votes_count += msg['voteGranted']
-        logger.debug('Vote count: %s', self.votes_count)
-        if self.votes_count > len(self.volatile['cluster']) / 2:
-            #transform to leader
-            self.orchestrator.change_state(Leader)
-            #braodcast current parameters to synchronize everyone
-            self.persist['currentTerm'] += 1
-            self.persist['votedFor'] += 1
-            msg = {'type': 'finish_election',
-                   'term': self.persist['currentTerm']
-                   'votedFor': self.persist['votedFor']}
-            self.orchestrator.broadcast_peers(msg)
+        #another candidate doesn't approve, stand down
+        if msg['voteGranted'] == False:
+            self.orchestrator.change_state(Follower)
+        else:
+            self.votes_count += msg['voteGranted']
+            logger.debug('Vote count: %s', self.votes_count)
+            if self.votes_count > len(self.volatile['cluster']) / 2:
+                #transform to leader
+                self.orchestrator.change_state(Leader)
+                #braodcast current parameters to synchronize everyone
+                self.persist['currentTerm'] += 1
+                self.persist['votedFor'] += 1
+                msg = {'type': 'finish_election',
+                       'term': self.persist['currentTerm'],
+                       'votedFor': self.persist['votedFor']}
+                self.orchestrator.broadcast_peers(msg)
+
     #candidate receive any vote, increment the counter
     def on_peer_receive_vote(self,msg):
         """Register peers votes, transition to Leader upon majority vote."""

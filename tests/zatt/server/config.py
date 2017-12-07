@@ -113,7 +113,6 @@ class Config:
 
         config['address'] = tuple(config['address'])
         config['cluster'].add(config['address'])
-        config['viewid'] = self.viewid
         if type(config['debug']) is str:
             config['debug'] = True if config['debug'] == 'true' else False
         print(config)
