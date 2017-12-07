@@ -34,7 +34,7 @@ class State:
             self.volatile = {'leaderId': None, 'cluster': config.cluster,
                 'address': config.address, 'private_key': config.private_key,
                 'public_keys': config.public_keys, 'clients': config.clients,
-                'client_keys': config.client_keys, 'candidateID':0}
+                'client_keys': config.client_keys}
             self.log = LogManager('log')
             self.sig_log = LogManager('sigs', machine=None)
 
@@ -141,14 +141,14 @@ class Follower(State):
         self.orchestrator.broadcast_peers(msg)
                
     ###followers receive start_vote msg
-    def on_peer_start_vote(self, msg):
+    def on_peer_start_vote(self, peer, msg):
         """Grant this node's vote to Candidates."""
         self.on_election = True
         term_is_current = msg['term'] >= self.persist['currentTerm']
         index_is_current = (msg['lastLogTerm'] > self.log.term() or
                             (msg['lastLogTerm'] == self.log.term() and
                              msg['lastLogIndex'] >= self.log.index))
-                             granted = term_is_current and index_is_current
+        granted = term_is_current and index_is_current
         transform = self.ID == msg['votedFor'] % len(self.volatile['cluster'])
         if granted:
             if transform:
@@ -164,7 +164,7 @@ class Follower(State):
                            'lastLogIndex': self.log.index}
                 self.orchestrator.broadcast_peers(message)
     #follower receive votes from other followers, is receive any vote, transform to candidate
-    def on_peer_receive_vote(self,msg):
+    def on_peer_receive_vote(self, peer, msg):
         term_is_current = msg['term'] >= self.persist['currentTerm']
         index_is_current = (msg['lastLogTerm'] > self.log.term() or
                             (msg['lastLogTerm'] == self.log.term() and
@@ -174,7 +174,7 @@ class Follower(State):
         if granted and transform:
             self.orchestrator.change_state(Candidate)
     #follower finishes election
-    def on_peer_finish_election(self,msg):
+    def on_peer_finish_election(self, peer, msg):
         self.on_election = False
         self.persist['currentTerm'] = msg['term']
         self.persist['votedFor'] = msg['votedFor']
