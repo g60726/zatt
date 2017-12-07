@@ -52,6 +52,7 @@ def update_config_json(file, node_id, config, client=False):
                         config['private_key'][node_id].encode("utf-8"))
                 config['storage'] = config['storage'][node_id]
                 config['address'] = tuple(config['address'])
+                config['id'] = int(node_id)
 
                 if not client:
                     del config['client_private_key']
