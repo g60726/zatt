@@ -131,6 +131,7 @@ class State:
                 msg['start_votes'][addr]['sig'])
             if not sig_check: break
 
+        # demote to Follower because election has started
         if term_is_current and enough_start_votes and sig_check:
             if type(self) is Leader:
                 self.orchestrator.change_state(Follower)
@@ -146,8 +147,18 @@ class State:
                     self.orchestrator.state.data_received_peer(peer, orig)
                     return
 
-        log_current = True # TODO LE
+        # verify logs are up-to-date
+        log_current = False
+        if msg['last_entry'] is None:
+            if self.log.commitIndex == -1:
+                log_current = True
+        else:
+            # verify log entry
+            if self.log.commitIndex <= msg['last_commit']:
+                if self.verify_prepares(msg['last_entry'], msg['last_sig']):
+                    log_current = True
 
+        # grant vote if all conditions met
         granted = term_is_current and enough_start_votes and log_current \
             and sig_check
         if granted:
@@ -208,6 +219,24 @@ class State:
     def sign_message(self, msg):
         signature = crypto.sign_message(json.dumps(msg), self.volatile['private_key'])
         return [json.dumps(msg), signature]
+
+    def verify_prepares(self, entry, prepares):
+        val_entry = json.dumps(entry)
+        sig_check = True
+        for key in prepares:
+            data = prepares[key][0]
+            sig = prepares[key][1]
+            sender = self.string_to_peer(key)
+
+            if not self.verify_sig(sender, data, sig):
+                sig_check = False
+                break
+
+            if json.dumps(data) != val_entry:
+                sig_check = False
+                break
+            
+        return sig_check
 
     def verify_sig(self, peer, data, sig):
         if peer in self.volatile['public_keys']:
@@ -366,24 +395,6 @@ class Follower(State):
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
-    def verify_prepares(self, entry, prepares):
-        val_entry = json.dumps(entry)
-        sig_check = True
-        for key in prepares:
-            data = prepares[key][0]
-            sig = prepares[key][1]
-            sender = self.string_to_peer(key)
-
-            if not super().verify_sig(sender, data, sig):
-                sig_check = False
-                break
-
-            if json.dumps(data) != val_entry:
-                sig_check = False
-                break
-            
-        return sig_check
-
 class Candidate(Follower):
     """Candidate state. Notice that this state subclasses Follower."""
     def __init__(self, old_state=None, orchestrator=None):
@@ -394,12 +405,17 @@ class Candidate(Follower):
 
     def send_vote_requests(self):
         """ Ask peers for votes. """
+        entry = None if self.log.commitIndex == -1 \
+                    else self.log[self.log.commitIndex]
+        sig = None if self.log.commitIndex == -1 \
+                    else self.sig_log[self.log.commitIndex]
         msg = {'type': 'request_vote', \
                'term': self.persist['currentTerm'], \
                'start_term': self.persist['startTerm'], \
                'start_votes': self.volatile['start_votes'], \
-               'last_entry': 0, \
-               'last_sig': 0} # TODO LE
+               'last_commit': self.log.commitIndex, \
+               'last_entry': entry, \
+               'last_sig': sig}
         self.orchestrator.broadcast_peers(self.sign_message(msg))
 
         # vote for self
