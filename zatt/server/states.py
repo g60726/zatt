@@ -59,7 +59,23 @@ class State:
         logger.debug('Received %s from %s', actualMsg['type'], peer)
 
         if self.persist['currentTerm'] < actualMsg['term']:
-            # TODO: LE this needs to check leader proof
+            # check to make sure peer is indeed leaderf
+            # TODO: Dennis how to handle no term on startup?
+            if 'lead_votes' in actualMsg:
+                for addr in actualMsg['lead_votes']:
+                    data = actualMsg['lead_votes'][addr]['data']
+                    if not (data['type'] == "response_vote" and \
+                            data['start_term'] == actualMsg['term'] and \
+                            data['vote_granted']):
+                        return
+                    sig_check = self.verify_sig( \
+                        self.string_to_peer(addr), \
+                        data, \
+                        actualMsg['lead_votes'][addr]['sig'])
+                    if not sig_check:
+                        return
+
+            # update term to leader's term
             self.persist['currentTerm'] = actualMsg['term']
             self.persist['startTerm'] = actualMsg['term']
             if not type(self) is Follower:
@@ -75,7 +91,7 @@ class State:
         if method:
             method(peer, actualMsg, msg)
         else:
-            logger.info('Unrecognized message from %s: %s', peer, actualMsg)
+            logger.debug('Unrecognized message from %s: %s', peer, actualMsg)
 
     def data_received_client(self, protocol, msg):
         """Receive client messages from orchestrator and pass them to the
@@ -100,9 +116,22 @@ class State:
     def on_peer_request_vote(self, peer, msg, orig):
         """ Verify/compare logs and grant vote to peer. """
         term_is_current = msg['term'] >= self.persist['currentTerm']
-        enough_start_votes = True # TODO LE
+        enough_start_votes = ( len(msg['start_votes']) >= self.quorum )
+        sig_check = False
+        for addr in msg['start_votes']:
+            data = msg['start_votes'][addr]['data']
+            cand_id = data['start_term'] % len(self.volatile['cluster'])
+            node_id = self.volatile['server_ids'][peer]
+            if not (data['type'] == "start_vote" and \
+                cand_id == node_id):
+                return
+            sig_check = self.verify_sig( \
+                self.string_to_peer(addr), \
+                data, \
+                msg['start_votes'][addr]['sig'])
+            if not sig_check: break
 
-        if term_is_current and enough_start_votes:
+        if term_is_current and enough_start_votes and sig_check:
             if type(self) is Leader:
                 self.orchestrator.change_state(Follower)
                 self.orchestrator.state.data_received_peer(peer, orig)
@@ -119,7 +148,8 @@ class State:
 
         log_current = True # TODO LE
 
-        granted = term_is_current and enough_start_votes and log_current
+        granted = term_is_current and enough_start_votes and log_current \
+            and sig_check
         if granted:
             self.persist['startTerm'] = msg['start_term']
             self.on_election = True
@@ -127,8 +157,6 @@ class State:
                         'term': self.persist['currentTerm'],
                         'vote_granted': True,
                         'start_term': msg['start_term']}
-            logger.info(self.volatile['address'])
-            logger.info(response)
             response = self.sign_message(response)
             self.orchestrator.send_peer(peer, response)
 
@@ -193,14 +221,22 @@ class State:
                     key, \
                     eval(sig))
 
+    def peer_to_string(self, peer):
+        return peer[0] + ":" + str(peer[1])
+
+    def string_to_peer(self, str):
+        arr = str.split(':')
+        return (arr[0], int(arr[1]))
+
 class Follower(State):
     """Follower state."""
     def __init__(self, old_state=None, orchestrator=None, ID=None):
         """Initialize parent and start election timer."""
         super().__init__(old_state, orchestrator)
-        self.volatile['start_votes'] = {}
+        if not type(self) is Candidate:
+            self.volatile['start_votes'] = {}
+            self.on_election = False
         self.restart_election_timer()
-        self.on_election = False
         self.waiting_clients = {}
 
     def teardown(self):
@@ -227,8 +263,6 @@ class Follower(State):
                'start_term': self.persist['startTerm']}
         signed = self.sign_message(msg)
 
-        logger.info(self.volatile['address'])
-        logger.info(msg)
         # broadcast start_vote to peers
         self.orchestrator.broadcast_peers(signed)
         self.on_peer_start_vote(self.volatile['address'], msg, signed)
@@ -240,13 +274,11 @@ class Follower(State):
         candidate_id = msg['start_term'] % len(self.volatile['cluster'])
 
         if term_is_current and candidate_id == self.volatile['node_id']:
-            if not tuple(peer) in self.volatile['start_votes']:
-                self.volatile['start_votes'][tuple(peer)] = orig
+            key = self.peer_to_string(peer)
+            value = {'data': msg, 'sig': str(orig[1])}
+            self.volatile['start_votes'][key] = value
             # If enough votes to start election, become a Candidate
             if len(self.volatile['start_votes']) >= self.quorum:
-                logger.info("Becoming candidate!")
-                logger.info(self.volatile['start_votes'])
-                logger.info(self.volatile['address'])
                 self.persist['startTerm'] = msg['start_term']
                 self.orchestrator.change_state(Candidate)
 
@@ -352,11 +384,6 @@ class Follower(State):
             
         return sig_check
 
-    def string_to_peer(self, str):
-        arr = str.split(':')
-        return (arr[0], int(arr[1]))
-
-
 class Candidate(Follower):
     """Candidate state. Notice that this state subclasses Follower."""
     def __init__(self, old_state=None, orchestrator=None):
@@ -370,6 +397,7 @@ class Candidate(Follower):
         msg = {'type': 'request_vote', \
                'term': self.persist['currentTerm'], \
                'start_term': self.persist['startTerm'], \
+               'start_votes': self.volatile['start_votes'], \
                'last_entry': 0, \
                'last_sig': 0} # TODO LE
         self.orchestrator.broadcast_peers(self.sign_message(msg))
@@ -388,12 +416,12 @@ class Candidate(Follower):
         same_term = ( msg['start_term'] == self.persist['startTerm'] )
 
         if term_is_current and same_term and msg['vote_granted']:
-            if not tuple(peer) in self.volatile['lead_votes']:
-                self.volatile['lead_votes'][tuple(peer)] = orig
+            key = self.peer_to_string(peer)
+            if not key in self.volatile['lead_votes']:
+                value = {'data': msg, 'sig': str(orig[1])}
+                self.volatile['lead_votes'][key] = value
             # if gathered enough votes, become Leader
             if len(self.volatile['lead_votes']) >= self.quorum:
-                logger.info("Becoming Leader!")
-                logger.info(self.volatile['lead_votes'])
                 self.persist['currentTerm'] = msg['start_term']
                 self.orchestrator.change_state(Leader)
 
@@ -430,6 +458,7 @@ class Leader(State):
                    'term': self.persist['currentTerm'],
                    'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
+                   'lead_votes': self.volatile['lead_votes'],
                    'prevLogEntry': prevLogEntry,
                    'prevLogSigs': prevLogSigs,
                    'entries': self.log[self.nextIndex[peer]: \
@@ -471,13 +500,6 @@ class Leader(State):
                 if msg['entry'] == json.dumps(self.log[idx+1]):
                     sig = (json.loads(msg['entry']), str(msg['entrySig']))
                     self.prepares[idx]['sigs'][self.peer_to_string(peer)] = sig
-                else:
-                    logger.info(msg['entry'])
-                    logger.info(self.log[idx+1])
-            else:
-                logger.info(msg)
-                logger.info(self.log[self.log.index])
-                logger.info(self.waiting_clients)
 
         # try to commit entries with a quorum of signatures
         to_delete = []
@@ -516,6 +538,7 @@ class Leader(State):
         prepare = {'type': 'append_prepare', \
                    'term': self.persist['currentTerm'], \
                    'leaderId': self.volatile['address'], \
+                   'lead_votes': self.volatile['lead_votes'], \
                    'logIndex': log_index, \
                    'message': msg, \
                    'client_sig': str(orig[1])}
@@ -539,6 +562,3 @@ class Leader(State):
             if peer == self.volatile['address']:
                 continue
             self.orchestrator.send_peer(peer, self.sign_message(prepare))
-
-    def peer_to_string(self, peer):
-        return peer[0] + ":" + str(peer[1])
