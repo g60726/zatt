@@ -395,6 +395,11 @@ class Follower(State):
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
+    def on_client_timeout(self, protocol, msg, orig):
+        """ Vote to initiate start of election. """
+        self.start_vote()
+        
+
 class Candidate(Follower):
     """Candidate state. Notice that this state subclasses Follower."""
     def __init__(self, old_state=None, orchestrator=None):
