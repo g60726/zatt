@@ -42,7 +42,7 @@ class State:
     def data_received_peer(self, peer, msg):
         """Receive peer messages from orchestrator and pass them to the
         appropriate method."""
-        # TODO: remove this check once we signed everthing
+        # TODO: LE remove this check once we signed everthing
         actualMsg = msg
         if not isinstance(msg, dict):
             isValid = crypto.verify_message( \
@@ -55,7 +55,7 @@ class State:
 
         logger.debug('Received %s from %s', actualMsg['type'], peer)
 
-        # TODO: this needs to check leader proof in new leader election protocol
+        # TODO: LE this needs to check leader proof
         if self.persist['currentTerm'] < actualMsg['term']:
             self.persist['currentTerm'] = actualMsg['term']
             if not type(self) is Follower:
@@ -419,7 +419,7 @@ class Leader(State):
         to_delete = []
         for log_idx in self.prepares:
             totalServers = len(self.volatile['cluster'])
-            minRequiredServers = 2 # TODO: int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
+            minRequiredServers = 2 # TODO: LE int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
             if len(self.prepares[log_idx]['sigs']) >= minRequiredServers:
                 commit_idx = self.log.commit(log_idx+1)
                 if commit_idx > log_idx:

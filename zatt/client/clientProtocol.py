@@ -112,7 +112,7 @@ class Orchestrator():
         self.private_key = config.client_private_key
         self.req_id = 0
         self.retry_attempts = 3
-        self.quorum = 2 # TODO: calculate based on the server_cluster
+        self.quorum = 2 # TODO: LE calculate based on the server_cluster
         self.state = Idle(orchestrator=self)
 
     def change_state(self, new_state):
