@@ -60,7 +60,7 @@ class State:
 
         if self.persist['currentTerm'] < actualMsg['term']:
             # check to make sure peer is indeed leaderf
-            # TODO: Dennis how to handle no term on startup?
+            is_leader = False
             if 'lead_votes' in actualMsg:
                 for addr in actualMsg['lead_votes']:
                     data = actualMsg['lead_votes'][addr]['data']
@@ -68,23 +68,24 @@ class State:
                             data['start_term'] == actualMsg['term'] and \
                             data['vote_granted']):
                         return
-                    sig_check = self.verify_sig( \
+                    is_leader = self.verify_sig( \
                         self.string_to_peer(addr), \
                         data, \
                         actualMsg['lead_votes'][addr]['sig'])
-                    if not sig_check:
-                        return
+                    if not is_leader:
+                        break
 
-            # update term to leader's term
-            self.persist['currentTerm'] = actualMsg['term']
-            self.persist['startTerm'] = actualMsg['term']
-            if not type(self) is Follower:
-                logger.info('Remote term is higher, converting to Follower')
-                self.orchestrator.change_state(Follower)
-                self.orchestrator.state.data_received_peer(peer, msg)
-                return
-            else:
-                self.on_election = False
+            # update term to leader's term if the leader proof checks out
+            if is_leader:
+                self.persist['currentTerm'] = actualMsg['term']
+                self.persist['startTerm'] = actualMsg['term']
+                if not type(self) is Follower:
+                    logger.info('Remote term is higher, converting to Follower')
+                    self.orchestrator.change_state(Follower)
+                    self.orchestrator.state.data_received_peer(peer, msg)
+                    return
+                else:
+                    self.on_election = False
 
         # Serve peer's request
         method = getattr(self, 'on_peer_' + actualMsg['type'], None)
@@ -299,10 +300,9 @@ class Follower(State):
                
     def on_peer_start_vote(self, peer, msg, orig):
         """ Collect peer votes to start an election. """
-        term_is_current = ( msg['term'] >= self.persist['currentTerm'] )
         candidate_id = msg['start_term'] % len(self.volatile['cluster'])
 
-        if term_is_current and candidate_id == self.volatile['node_id']:
+        if candidate_id == self.volatile['node_id']:
             key = self.peer_to_string(peer)
             value = {'data': msg, 'sig': str(orig[1])}
             self.volatile['start_votes'][key] = value
@@ -312,7 +312,7 @@ class Follower(State):
                 self.orchestrator.change_state(Candidate)
 
     def on_peer_append_prepare(self, peer, msg, orig):
-        if self.on_election:
+        if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
         client_msg = msg['message']
@@ -341,7 +341,7 @@ class Follower(State):
 
     def on_peer_append_entries(self, peer, msg, orig):
         """ Manages incoming log entries from the Leader """
-        if self.on_election:
+        if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
         self.restart_election_timer()
@@ -400,6 +400,7 @@ class Candidate(Follower):
     def __init__(self, old_state=None, orchestrator=None):
         """Initialize parent, increase term, vote for self, ask for votes."""
         super().__init__(old_state, orchestrator)
+        self.on_election = True
         self.volatile['lead_votes'] = {}
         self.send_vote_requests()
 
@@ -428,10 +429,9 @@ class Candidate(Follower):
 
     def on_peer_response_vote(self, peer, msg, orig):
         """ Register peers votes, transition to Leader upon majority vote. """
-        term_is_current = ( msg['term'] >= self.persist['currentTerm'] )
         same_term = ( msg['start_term'] == self.persist['startTerm'] )
 
-        if term_is_current and same_term and msg['vote_granted']:
+        if same_term and msg['vote_granted']:
             key = self.peer_to_string(peer)
             if not key in self.volatile['lead_votes']:
                 value = {'data': msg, 'sig': str(orig[1])}
