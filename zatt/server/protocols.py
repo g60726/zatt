@@ -36,9 +36,6 @@ class Orchestrator():
 
     def send_peer(self, recipient, message):
         if recipient != self.state.volatile['address']:
-            # logger.info(str(tuple(self.state.volatile['address']))\
-            #  + " to " +str(tuple(recipient)))
-            # logger.info(message)
             self.peer_transport.sendto(
                 msgpack.packb(message, use_bin_type=True), tuple(recipient))
 
@@ -51,7 +48,6 @@ class Orchestrator():
 
     def send_client(self, address, message):
         msg = message.copy()
-        msg['server_address'] = self.config.address
         self.send_message(address, msg)
 
     def send_message(self, address, message):

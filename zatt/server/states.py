@@ -45,14 +45,17 @@ class State:
         # TODO: remove this check once we signed everthing
         actualMsg = msg
         if not isinstance(msg, dict):
-            isValid = crypto.verify_message(msg[0], self.volatile['public_keys'][tuple(peer)], msg[1])
+            isValid = crypto.verify_message( \
+                msg[0], \
+                self.volatile['public_keys'][tuple(peer)], \
+                msg[1])
             if not isValid:
                 return
             actualMsg = json.loads(msg[0])
 
         logger.debug('Received %s from %s', actualMsg['type'], peer)
 
-        # TODO: Dennis, there should be some sort of security check here...
+        # TODO: this needs to check leader proof in new leader election protocol
         if self.persist['currentTerm'] < actualMsg['term']:
             self.persist['currentTerm'] = actualMsg['term']
             if not type(self) is Follower:
@@ -69,36 +72,46 @@ class State:
     def data_received_client(self, protocol, msg):
         """Receive client messages from orchestrator and pass them to the
         appropriate method."""
-        method = getattr(self, 'on_client_' + msg['type'], None)
+        actualMsg = json.loads(msg[0])
+        isValid = crypto.verify_message( \
+            msg[0], \
+            self.volatile['client_keys'][tuple(actualMsg['client'])], \
+            msg[1])
+        if not isValid:
+            return
+
+        method = getattr(self, 'on_client_' + actualMsg['type'], None)
         if method:
-            method(protocol, msg)
+            method(protocol, actualMsg, msg)
         else:
             logger.info('Unrecognized message from %s: %s',
                         protocol.transport.get_extra_info('peername'), msg)
 
-    def on_client_append(self, protocol, msg):
+    def on_client_append(self, protocol, msg, orig):
         """Redirect client to leader upon receiving a client_append message."""
         if self.volatile['leaderId']:
             self.orchestrator.redir_leader( \
-                tuple(self.volatile['leaderId']), msg)
-            logger.info('Redirect client %s:%s to leader',
+                tuple(self.volatile['leaderId']), orig)
+            logger.debug('Redirect client %s:%s to leader',
                          *protocol.transport.get_extra_info('peername'))
 
-    def on_client_get(self, protocol, msg):
+    def on_client_get(self, protocol, msg, orig):
         """Return state machine to client."""
         state_machine = self.log.state_machine.data.copy()
-        self.orchestrator.send_client(msg['client'], \
-            {'type': 'result', 'success': True, 'req_id': msg['req_id'], \
-                'data': state_machine})
+        resp = {'type': 'result', 'success': True, 'req_id': msg['req_id'], \
+                'data': state_machine, \
+                'server_address': self.volatile['address']}
+        self.orchestrator.send_client(msg['client'], self.sign_message(resp))
 
     def send_client_append_response(self):
         """ Respond to client upon commitment of log entries """
         for client_addr, client_req in self.waiting_clients.items():
             if client_req['log_idx'] < self.log.commitIndex:
-                # TODO: sign message
-                self.orchestrator.send_client(client_addr, \
-                    {'type': 'result', 'success': True, \
-                        'req_id': client_req['req_id']})
+                resp = {'type': 'result', 'success': True, \
+                        'req_id': client_req['req_id'], \
+                        'server_address': self.volatile['address']}
+                self.orchestrator.send_client(client_addr, 
+                                              self.sign_message(resp))
 
     def store_client_new_req(self, msg):
         # keep track of the new client (to respond to upon commit or retransmit)
@@ -124,6 +137,17 @@ class State:
         signature = crypto.sign_message(json.dumps(msg), self.volatile['private_key'])
         return [json.dumps(msg), signature]
 
+    def verify_sig(self, peer, data, sig):
+        if peer in self.volatile['public_keys']:
+            key = self.volatile['public_keys'][peer]
+        elif peer in self.volatile['client_keys']:
+            key = self.volatile['client_keys'][peer]
+        else:
+            return False
+        return crypto.verify_message(
+                    json.dumps(data), \
+                    key, \
+                    eval(sig))
 
 class Follower(State):
     """Follower state."""
@@ -171,11 +195,12 @@ class Follower(State):
         self.orchestrator.send_peer(peer, response)
 
     def on_peer_append_prepare(self, peer, msg):
-        # TODO: verify client signature
         client_msg = msg['message']
+        client_addr = tuple(client_msg['client'])
+        if not super().verify_sig(client_addr, client_msg, msg['client_sig']):
+            return
 
         new_req = super().store_client_new_req(client_msg)
-
         if new_req:
             # append new entry at tip of log
             entry = {'term': msg['term'], \
@@ -206,8 +231,10 @@ class Follower(State):
             prev_log_index = msg['prevLogEntry']['log_index']
             prev_log_term_match = (self.log.index >  prev_log_index and \
                  self.log.term(prev_log_index+1) == prev_term and \
-                 len(msg['prevLogSigs']) >= 2)
-        # TODO: verify signatures on the provided entry
+                 len(msg['prevLogSigs']) >= 2) and \
+                 self.verify_prepares( \
+                    msg['prevLogEntry'], \
+                    msg['prevLogSigs'])
 
         success = term_is_current and prev_log_term_match
 
@@ -216,7 +243,7 @@ class Follower(State):
             for index in range(len(msg['sigs'])):
                 sig_check = self.verify_prepares( \
                     msg['entries'][index], \
-                    msg['sigs'][index], msg)
+                    msg['sigs'][index])
 
                 if len(msg['sigs'][index]) >= 2 and sig_check:
                     entry = msg['entries'][index]
@@ -225,7 +252,7 @@ class Follower(State):
                     self.log.append_entries([entry], log_idx)
                     self.sig_log.append_entries([msg['sigs'][index]], log_idx)
                     self.log.commit(log_idx+1)
-                    logger.info('Log index is now %s', self.log.commitIndex)
+                    logger.debug('Log index is now %s', self.log.commitIndex)
                 else:
                     logger.info("Invalid signature!!")
                     break
@@ -243,7 +270,7 @@ class Follower(State):
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
-    def verify_prepares(self, entry, prepares, msg):
+    def verify_prepares(self, entry, prepares):
         val_entry = json.dumps(entry)
         sig_check = True
         for key in prepares:
@@ -251,26 +278,15 @@ class Follower(State):
             sig = prepares[key][1]
             sender = self.string_to_peer(key)
 
-            if not self.verify_sig(sender, data, sig):
+            if not super().verify_sig(sender, data, sig):
                 sig_check = False
                 break
 
             if json.dumps(data) != val_entry:
-                logger.info(json.dumps(data))
-                logger.info(val_entry)
-                logger.info(msg)
-                for i in range(self.log.index):
-                    logger.info(self.log[i])
                 sig_check = False
                 break
             
         return sig_check
-
-    def verify_sig(self, peer, data, sig):
-        return crypto.verify_message(
-                    json.dumps(data), \
-                    self.volatile['public_keys'][peer], \
-                    eval(sig))
 
     def string_to_peer(self, str):
         arr = str.split(':')
@@ -418,8 +434,7 @@ class Leader(State):
             del self.prepares[log_idx]
 
 
-    def on_client_append(self, protocol, msg):
-        # TODO: verify sig of client msg
+    def on_client_append(self, protocol, msg, orig):
         new_req = super().store_client_new_req(msg)
 
         # append new entry to tip of Leader log
@@ -440,7 +455,8 @@ class Leader(State):
                    'term': self.persist['currentTerm'], \
                    'leaderId': self.volatile['address'], \
                    'logIndex': log_index, \
-                   'message': msg}
+                   'message': msg, \
+                   'client_sig': str(orig[1])}
 
         if new_req:
             self.prepares[log_index] = {'prepare_msg': prepare, \
@@ -454,7 +470,7 @@ class Leader(State):
                     'entrySig': str(sig)}
             self.on_peer_response_prepare(self.volatile['address'], resp)
 
-        # TODO: delegate to periodic function
+        # TODO: Dennis delegate to periodic function
         # tell followers to prepare new entry
         for peer in self.volatile['cluster']:
             if peer == self.volatile['address']:

@@ -3,6 +3,8 @@ import logging
 import msgpack
 import random
 import socket
+import json
+from zatt.common import crypto
 from zatt.server.utils import extended_msgpack_serializer
 
 logger = logging.getLogger(__name__)
@@ -31,11 +33,14 @@ class State:
         msg = message.copy()
         msg['client'] = self.orchestrator.config.client_address
         msg['req_id'] = self.orchestrator.req_id
-        logger.debug(msg)
+        signature = crypto.sign_message( \
+            json.dumps(msg), \
+            self.orchestrator.private_key)
+        signed = [json.dumps(msg), signature]
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(address)
-            sock.send(msgpack.packb(msg, use_bin_type=True))
+            sock.send(msgpack.packb(signed, use_bin_type=True))
         except socket.error:
             return False
         finally:
@@ -103,9 +108,11 @@ class Orchestrator():
     def __init__(self, config):
         self.server_cluster = list(config.cluster)
         self.config = config
+        self.public_keys = config.public_keys
+        self.private_key = config.client_private_key
         self.req_id = 0
         self.retry_attempts = 3
-        self.quorum = 2 # TODO: Dennis calculate based on the server_cluster
+        self.quorum = 2 # TODO: calculate based on the server_cluster
         self.state = Idle(orchestrator=self)
 
     def change_state(self, new_state):
@@ -115,7 +122,14 @@ class Orchestrator():
         self.state.data_received_command(transport, message)
 
     def data_received_server(self, transport, message):
-        self.state.data_received_server(transport, message)
+        actualMsg = json.loads(message[0])
+        isValid = crypto.verify_message( \
+            message[0], \
+            self.public_keys[tuple(actualMsg['server_address'])], \
+            message[1])
+        if not isValid:
+            return
+        self.state.data_received_server(transport, actualMsg)
 
 class ServerProtocol(asyncio.Protocol):
     """TCP protocol for communicating with servers."""
@@ -129,7 +143,8 @@ class ServerProtocol(asyncio.Protocol):
 
     def data_received(self, data):
         message = msgpack.unpackb(data, encoding='utf-8')
-        if 'server_address' in message:
+        # TODO: make a better distinction between server and command
+        if not isinstance(message, dict):
             self.orchestrator.data_received_server(self, message)
         else:
             self.orchestrator.data_received_command(self, message)
