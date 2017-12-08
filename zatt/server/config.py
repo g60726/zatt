@@ -38,6 +38,8 @@ def update_config_json(file, node_id, config, client=False):
                                     crypto.load_asymm_pub_key( \
                                         clients[key][2].encode("utf-8"))
                                             for key in config['clients']}
+        config['server_ids'] = {(cluster[key][0], cluster[key][1]): int(key) \
+                                        for key in config['cluster']}
         config['cluster'] = {(cluster[key][0], cluster[key][1]) \
                                     for key in config['cluster']}
         config['clients'] = {(clients[key][0], clients[key][1]) \
