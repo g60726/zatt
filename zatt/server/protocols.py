@@ -14,9 +14,9 @@ class Orchestrator():
     """The orchestrator manages the current node state,
     switching between Follower, Candidate and Leader when necessary.
     Only one Orchestrator """
-    def __init__(self):
+    def __init__(self, init_state = Follower):
         os.makedirs(config.storage, exist_ok=True)
-        self.state = Follower(orchestrator=self)
+        self.state = init_state(orchestrator=self)
         self.config = config
 
     def change_state(self, new_state):
