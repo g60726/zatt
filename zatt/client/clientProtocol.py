@@ -4,6 +4,7 @@ import msgpack
 import random
 import socket
 import json
+import math
 from zatt.common import crypto
 from zatt.server.utils import extended_msgpack_serializer
 
@@ -33,6 +34,7 @@ class State:
         msg = message.copy()
         msg['client'] = self.orchestrator.config.client_address
         msg['req_id'] = self.orchestrator.req_id
+        logger.debug(msg)
         signature = crypto.sign_message( \
             json.dumps(msg), \
             self.orchestrator.private_key)
@@ -76,7 +78,6 @@ class InProgress(State):
         self.retry_counter = 0
 
     def data_received_server(self, transport, message):
-        logger.debug(message)
         if message['req_id'] == self.orchestrator.req_id:
             self.responses[tuple(message['server_address'])] = message
         if len(self.responses) >= self.orchestrator.quorum:
@@ -85,7 +86,7 @@ class InProgress(State):
             self.orchestrator.transport.send(message)
 
     def start_timer(self):
-        timeout = 0.5
+        timeout = 1.0
         loop = asyncio.get_event_loop()
         self.request_timer = \
             loop.call_later(timeout, self.timed_out)
@@ -112,7 +113,7 @@ class Orchestrator():
         self.private_key = config.client_private_key
         self.req_id = 0
         self.retry_attempts = 3
-        self.quorum = 2 # TODO: LE calculate based on the server_cluster
+        self.quorum = int(math.ceil((len(self.public_keys)-1) / 3.0 * 2.0) + 1)
         self.state = Idle(orchestrator=self)
 
     def change_state(self, new_state):

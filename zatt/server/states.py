@@ -37,10 +37,11 @@ class State:
                 'client_keys': config.client_keys, 'node_id': config.id,
                 'start_votes': {}, 'server_ids': config.server_ids,
                 'lead_votes': {}}
-
             self.log = LogManager('log')
             self.sig_log = LogManager('sigs', machine=None)
         self.waiting_clients = {}
+        self.quorum = int(math.ceil(
+            (len(self.volatile['cluster'])-1) / 3.0 * 2.0) + 1)
 
     def data_received_peer(self, peer, msg):
         """Receive peer messages from orchestrator and pass them to the
@@ -126,6 +127,8 @@ class State:
                         'term': self.persist['currentTerm'],
                         'vote_granted': True,
                         'start_term': msg['start_term']}
+            logger.info(self.volatile['address'])
+            logger.info(response)
             response = self.sign_message(response)
             self.orchestrator.send_peer(peer, response)
 
@@ -209,7 +212,7 @@ class Follower(State):
         if hasattr(self, 'election_timer'):
             self.election_timer.cancel()
 
-        timeout = randrange(1, 4) * 10 ** (0 if config.debug else -1)
+        timeout = randrange(1, 4) * 5 ** (0 if config.debug else -1)
         loop = asyncio.get_event_loop()
         self.election_timer = loop.call_later(timeout, self.start_vote)
         logger.debug('Election timer restarted: %s s', timeout)
@@ -224,6 +227,8 @@ class Follower(State):
                'start_term': self.persist['startTerm']}
         signed = self.sign_message(msg)
 
+        logger.info(self.volatile['address'])
+        logger.info(msg)
         # broadcast start_vote to peers
         self.orchestrator.broadcast_peers(signed)
         self.on_peer_start_vote(self.volatile['address'], msg, signed)
@@ -238,7 +243,10 @@ class Follower(State):
             if not tuple(peer) in self.volatile['start_votes']:
                 self.volatile['start_votes'][tuple(peer)] = orig
             # If enough votes to start election, become a Candidate
-            if len(self.volatile['start_votes']) >= 2: # TODO: LE
+            if len(self.volatile['start_votes']) >= self.quorum:
+                logger.info("Becoming candidate!")
+                logger.info(self.volatile['start_votes'])
+                logger.info(self.volatile['address'])
                 self.persist['startTerm'] = msg['start_term']
                 self.orchestrator.change_state(Candidate)
 
@@ -285,7 +293,7 @@ class Follower(State):
             prev_log_index = msg['prevLogEntry']['log_index']
             prev_log_term_match = (self.log.index >  prev_log_index and \
                  self.log.term(prev_log_index+1) == prev_term and \
-                 len(msg['prevLogSigs']) >= 2) and \
+                 len(msg['prevLogSigs']) >= self.quorum) and \
                  self.verify_prepares( \
                     msg['prevLogEntry'], \
                     msg['prevLogSigs'])
@@ -294,23 +302,25 @@ class Follower(State):
 
         # attempt to append to log
         if success:
+            added = 0
             for index in range(len(msg['sigs'])):
                 sig_check = self.verify_prepares( \
                     msg['entries'][index], \
                     msg['sigs'][index])
-
-                if len(msg['sigs'][index]) >= 2 and sig_check:
+                if len(msg['sigs'][index]) >= self.quorum and sig_check:
                     entry = msg['entries'][index]
                     log_idx = entry['log_index']
                     # record entries, signatures, and persist the proof
                     self.log.append_entries([entry], log_idx)
                     self.sig_log.append_entries([msg['sigs'][index]], log_idx)
                     self.log.commit(log_idx+1)
+                    added += 1
                     logger.debug('Log index is now %s', self.log.commitIndex)
                 else:
                     logger.info("Invalid signature!!")
                     break
-            super().send_client_append_response()
+            if added > 0:
+                super().send_client_append_response()
         # could not append to log
         else:
             logger.warning('Could not append entries. cause: %s', 'wrong\
@@ -381,7 +391,9 @@ class Candidate(Follower):
             if not tuple(peer) in self.volatile['lead_votes']:
                 self.volatile['lead_votes'][tuple(peer)] = orig
             # if gathered enough votes, become Leader
-            if len(self.volatile['lead_votes']) >= 2: # TODO: LE
+            if len(self.volatile['lead_votes']) >= self.quorum:
+                logger.info("Becoming Leader!")
+                logger.info(self.volatile['lead_votes'])
                 self.persist['currentTerm'] = msg['start_term']
                 self.orchestrator.change_state(Leader)
 
@@ -470,9 +482,7 @@ class Leader(State):
         # try to commit entries with a quorum of signatures
         to_delete = []
         for log_idx in self.prepares:
-            totalServers = len(self.volatile['cluster'])
-            minRequiredServers = 2 # TODO: LE int(math.ceil(1.0 * totalServers / 3 * 2) + 1)
-            if len(self.prepares[log_idx]['sigs']) >= minRequiredServers:
+            if len(self.prepares[log_idx]['sigs']) >= self.quorum:
                 commit_idx = self.log.commit(log_idx+1)
                 if commit_idx > log_idx:
                     # record signatures and persist the proof
