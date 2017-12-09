@@ -34,7 +34,7 @@ class State:
             self.volatile = {'leaderId': None, 'cluster': config.cluster,
                 'address': config.address, 'private_key': config.private_key,
                 'public_keys': config.public_keys, 'clients': config.clients,
-                'client_keys': config.client_keys, 'node_id': config.id,
+                'client_keys': config.client_keys, 'node_id': int(config.id),
                 'start_votes': {}, 'server_ids': config.server_ids,
                 'lead_votes': {}}
             self.log = LogManager('log')
@@ -79,7 +79,7 @@ class State:
             self.persist['currentTerm'] = actualMsg['term']
             self.persist['startTerm'] = actualMsg['term']
             if not type(self) is Follower:
-                logger.info('Remote term is higher, converting to Follower')
+                logger.debug('Remote term is higher, converting to Follower')
                 self.orchestrator.change_state(Follower)
                 self.orchestrator.state.data_received_peer(peer, msg)
                 return
@@ -162,6 +162,7 @@ class State:
         granted = term_is_current and enough_start_votes and log_current \
             and sig_check
         if granted:
+            print("Casting Vote!")
             self.persist['startTerm'] = msg['start_term']
             self.on_election = True
             response = {'type': 'response_vote', 
@@ -260,6 +261,7 @@ class State:
 class Follower(State):
     """Follower state."""
     def __init__(self, old_state=None, orchestrator=None, ID=None):
+        print("Became Follower of term: "+self.persist['currentTerm'])
         """Initialize parent and start election timer."""
         super().__init__(old_state, orchestrator)
         if not type(self) is Candidate:
@@ -287,6 +289,8 @@ class Follower(State):
         self.on_election = True
         self.persist['startTerm'] += 1
 
+        print("Timed out with new startTerm:" + str(self.persist['startTerm']))
+
         msg = {'type': 'start_vote',
                'term': self.persist['currentTerm'],
                'start_term': self.persist['startTerm']}
@@ -305,7 +309,8 @@ class Follower(State):
         if term_is_current and candidate_id == self.volatile['node_id']:
             key = self.peer_to_string(peer)
             value = {'data': msg, 'sig': str(orig[1])}
-            self.volatile['start_votes'][key] = value
+            if key not in self.volatile['start_votes']:
+                self.volatile['start_votes'][key] = value
             # If enough votes to start election, become a Candidate
             if len(self.volatile['start_votes']) >= self.quorum:
                 self.persist['startTerm'] = msg['start_term']
@@ -398,10 +403,14 @@ class Follower(State):
 class Candidate(Follower):
     """Candidate state. Notice that this state subclasses Follower."""
     def __init__(self, old_state=None, orchestrator=None):
+        print("Became Candidate!")
         """Initialize parent, increase term, vote for self, ask for votes."""
         super().__init__(old_state, orchestrator)
         self.volatile['lead_votes'] = {}
         self.send_vote_requests()
+        start_terms = [self.volatile['start_votes'][key]['data']['start_term'] \
+            for key in self.volatile['start_votes']]
+        self.persist['startTerm'] = min(start_terms)
 
     def send_vote_requests(self):
         """ Ask peers for votes. """
@@ -447,12 +456,13 @@ class Leader(State):
         """ Initialize parent, sets leader variables, start periodic
             append_entries """
         super().__init__(old_state, orchestrator)
-        logger.info('Leader of term: %s', self.persist['currentTerm'])
+        logger.debug('Leader of term: %s', self.persist['currentTerm'])
         self.volatile['leaderId'] = self.volatile['address']
         self.matchIndex = {p: 0 for p in self.volatile['cluster']}
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
         self.prepares = {}
         self.send_append_entries()
+        print("Became Leader!")
 
     def teardown(self):
         """ Stop timers before changing state """

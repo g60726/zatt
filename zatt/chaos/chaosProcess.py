@@ -10,10 +10,12 @@ from zatt.common import crypto
 
 logger = logging.getLogger(__name__)
 
-class Pool:
+class ChaosProcess:
     def __init__(self, server_ids, server_config):
         if type(server_ids) is int:
             server_ids = range(server_ids)
+        else:
+            server_ids = [int(server_ids)]
         self._generate_configs(server_ids, server_config)
         self.servers = {}
         for config in self.configs.values():

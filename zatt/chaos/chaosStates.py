@@ -1,5 +1,6 @@
-logger = logging.getLogger(__name__)
+import logging
 
+logger = logging.getLogger(__name__)
 
 class ChaosMonkey:
     """ ChaosMonkey state to simulate Byzantine failures. """

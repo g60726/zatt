@@ -6,7 +6,7 @@ from zatt.server.config import update_config_json
 
 logger = logging.getLogger(__name__)
 
-class ClientProcess():
+class ClientProcess:
     def __init__(self, client_ids, client_config):
         if type(client_ids) is int:
             client_ids = range(client_ids)

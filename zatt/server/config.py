@@ -21,7 +21,8 @@ parser.add_argument('--remote-address', action='append', default=[],
 parser.add_argument('--remote-port', action='append', default=[], type=int,
                     help='Remote node port')
 parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-
+parser.add_argument('--type', dest='type', default="server",
+                    help='client, server, or chaos')
 
 def update_config_json(file, node_id, config, client=False):
     if os.path.isfile(file):
