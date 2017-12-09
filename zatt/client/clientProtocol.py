@@ -112,7 +112,7 @@ class Orchestrator():
         self.public_keys = config.public_keys
         self.private_key = config.client_private_key
         self.req_id = 0
-        self.retry_attempts = 3
+        self.retry_attempts = 5
         self.quorum = int(math.ceil((len(self.public_keys)-1) / 3.0 * 2.0) + 1)
         self.state = Idle(orchestrator=self)
 

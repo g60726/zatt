@@ -372,23 +372,24 @@ class Follower(State):
         if success:
             added = 0
             for index in range(len(msg['sigs'])):
-                sig_check = self.verify_prepares( \
-                    msg['entries'][index], \
-                    msg['sigs'][index])
-                if len(msg['sigs'][index]) >= self.quorum and sig_check:
-                    entry = msg['entries'][index]
-                    log_idx = entry['log_index']
-                    # record entries, signatures, and persist the proof
-                    self.log.append_entries([entry], log_idx)
-                    self.sig_log.append_entries([msg['sigs'][index]], log_idx)
-                    self.log.commit(log_idx+1)
-                    added += 1
-                    logger.debug('Log index is now %s', self.log.commitIndex)
-                    print(str(datetime.now()) + " "+ "Successfully appended to log: "+str(self.log.commitIndex-1))
-                else:
-                    logger.debug("Invalid signature!!")
-                    break
+                if msg['entries'][index]['log_index'] >= self.log.commitIndex:
+                    sig_check = self.verify_prepares( \
+                        msg['entries'][index], \
+                        msg['sigs'][index])
+                    if len(msg['sigs'][index]) >= self.quorum and sig_check:
+                        entry = msg['entries'][index]
+                        log_idx = entry['log_index']
+                        # record entries, signatures, and persist the proof
+                        self.log.append_entries([entry], log_idx)
+                        self.sig_log.append_entries([msg['sigs'][index]], log_idx)
+                        self.log.commit(log_idx+1)
+                        added += 1
+                        logger.debug('Log index is now %s', self.log.commitIndex)
+                    else:
+                        logger.debug("Invalid signature!!")
+                        break
             if added > 0:
+                print(str(datetime.now()) + " "+ "Successfully appended to log: "+str(self.log.commitIndex-1))
                 super().send_client_append_response()
         # could not append to log
         else:
