@@ -10,6 +10,7 @@ from collections import defaultdict
 from zatt.common import crypto
 import math
 import json
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class State:
             if is_leader:
                 self.persist['currentTerm'] = actualMsg['term']
                 self.persist['startTerm'] = actualMsg['term']
+                self.volatile['start_votes'] = {}
                 if not type(self) is Follower:
                     logger.debug('Remote term is higher, converting to Follower')
                     self.orchestrator.change_state(Follower)
@@ -86,7 +88,7 @@ class State:
                     return
                 else:
                     self.on_election = False
-                    print("Became Follower of term: "+str(self.persist['currentTerm']))
+                    print(str(datetime.now()) + " "+ "Became Follower of term: "+str(self.persist['currentTerm']))
 
         # Serve peer's request
         method = getattr(self, 'on_peer_' + actualMsg['type'], None)
@@ -164,7 +166,7 @@ class State:
         granted = term_is_current and enough_start_votes and log_current \
             and sig_check
         if granted:
-            print("Casting vote for term: " + str(msg['start_term']))
+            print(str(datetime.now()) + " "+ "Casting vote for term: " + str(msg['start_term']))
             self.persist['startTerm'] = msg['start_term']
             self.on_election = True
             response = {'type': 'response_vote', 
@@ -265,7 +267,7 @@ class Follower(State):
     def __init__(self, old_state=None, orchestrator=None, ID=None):
         """Initialize parent and start election timer."""
         super().__init__(old_state, orchestrator)
-        print("Became Follower of term: "+str(self.persist['currentTerm']))
+        print(str(datetime.now()) + " "+ "Became Follower of term: "+str(self.persist['currentTerm']))
         if not type(self) is Candidate:
             self.volatile['start_votes'] = {}
             self.on_election = False
@@ -288,6 +290,7 @@ class Follower(State):
 
     def start_vote(self):
         """ Timeout detected! Broadcast message to start new election cycle. """
+        print(str(datetime.now()) + " "+ "Timed out!")
         self.on_election = True
         self.persist['startTerm'] += 1
 
@@ -381,7 +384,7 @@ class Follower(State):
                     self.log.commit(log_idx+1)
                     added += 1
                     logger.debug('Log index is now %s', self.log.commitIndex)
-                    print("Successfully appended to log: "+str(self.log.commitIndex-1))
+                    print(str(datetime.now()) + " "+ "Successfully appended to log: "+str(self.log.commitIndex-1))
                 else:
                     logger.debug("Invalid signature!!")
                     break
@@ -414,7 +417,7 @@ class Candidate(Follower):
         start_terms = [self.volatile['start_votes'][key]['data']['start_term'] \
             for key in self.volatile['start_votes']]
         self.persist['startTerm'] = min(start_terms)
-        print("Became Candidate for term: " + str(self.persist['startTerm']))
+        print(str(datetime.now()) + " "+ "Became Candidate for term: " + str(self.persist['startTerm']))
         self.volatile['lead_votes'] = {}
         self.send_vote_requests()
 
@@ -467,7 +470,7 @@ class Leader(State):
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
         self.prepares = {}
         self.send_append_entries()
-        print("Became Leader of term: "+ str(self.persist['currentTerm']))
+        print(str(datetime.now()) + " "+ "Became Leader of term: "+ str(self.persist['currentTerm']))
 
     def teardown(self):
         """ Stop timers before changing state """
@@ -511,8 +514,8 @@ class Leader(State):
         # record peer's signed prepare
         if msg['success']:
             # update leader's understanding of peer's updated log indices
-            self.matchIndex[peer] = msg['matchIndex']
-            self.nextIndex[peer] = msg['matchIndex'] + 1
+            self.matchIndex[peer] = min(self.log.index, msg['matchIndex'])
+            self.nextIndex[peer] = min(self.log.index, msg['matchIndex'] + 1)
 
             # because leader is also calling on_peer_response_append itself, 
             # this is the leader trying to update its own indices
@@ -529,6 +532,7 @@ class Leader(State):
         if idx in self.prepares and peer not in self.prepares[idx]:
             if self.log.index > idx:
                 if msg['entry'] == json.dumps(self.log[idx+1]):
+                    # TODO: check signature
                     sig = (json.loads(msg['entry']), str(msg['entrySig']))
                     self.prepares[idx]['sigs'][self.peer_to_string(peer)] = sig
 
@@ -560,7 +564,7 @@ class Leader(State):
                      'data': msg['data'], \
                      'log_index': self.log.index}
             self.log.append_entries([entry], self.log.index)
-            print("Received new req, appending to " + str(log_index))
+            print(str(datetime.now()) + " "+ "Received new req, appending to " + str(log_index))
         else:
             log_index = self.waiting_clients[tuple(msg['client'])]['log_idx']
             logger.debug("Retransmitting req at log index: " + str(log_index))

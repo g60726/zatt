@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from zatt.chaos.chaosStates import ChaosMonkey
-from zatt.server.protocols import Orchestrator, ClientProtocol
+from zatt.server.protocols import Orchestrator, ClientProtocol, PeerProtocol
 from zatt.server.config import Config
 from zatt.server.logger import start_logger
 
@@ -14,6 +14,11 @@ def setup(config={}):
 
     loop = asyncio.get_event_loop()
     orchestrator = Orchestrator(ChaosMonkey)
+    coro = loop.create_datagram_endpoint(lambda: PeerProtocol(orchestrator),
+                                         local_addr=config.address)
+    transport, _ = loop.run_until_complete(coro)
+    orchestrator.peer_transport = transport
+
     coro = loop.create_server(lambda: ClientProtocol(orchestrator),
                               *config.address)
     server = loop.run_until_complete(coro)
