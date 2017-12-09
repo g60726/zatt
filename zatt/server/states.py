@@ -60,7 +60,7 @@ class State:
 
         if self.persist['currentTerm'] < actualMsg['term']:
             # check to make sure peer is indeed leaderf
-            # TODO: Dennis how to handle no term on startup?
+            is_leader = False
             if 'lead_votes' in actualMsg:
                 for addr in actualMsg['lead_votes']:
                     data = actualMsg['lead_votes'][addr]['data']
@@ -68,23 +68,25 @@ class State:
                             data['start_term'] == actualMsg['term'] and \
                             data['vote_granted']):
                         return
-                    sig_check = self.verify_sig( \
+                    is_leader = self.verify_sig( \
                         self.string_to_peer(addr), \
                         data, \
                         actualMsg['lead_votes'][addr]['sig'])
-                    if not sig_check:
-                        return
+                    if not is_leader:
+                        break
 
-            # update term to leader's term
-            self.persist['currentTerm'] = actualMsg['term']
-            self.persist['startTerm'] = actualMsg['term']
-            if not type(self) is Follower:
-                logger.debug('Remote term is higher, converting to Follower')
-                self.orchestrator.change_state(Follower)
-                self.orchestrator.state.data_received_peer(peer, msg)
-                return
-            else:
-                self.on_election = False
+            # update term to leader's term if the leader proof checks out
+            if is_leader:
+                self.persist['currentTerm'] = actualMsg['term']
+                self.persist['startTerm'] = actualMsg['term']
+                if not type(self) is Follower:
+                    logger.debug('Remote term is higher, converting to Follower')
+                    self.orchestrator.change_state(Follower)
+                    self.orchestrator.state.data_received_peer(peer, msg)
+                    return
+                else:
+                    self.on_election = False
+                    print("Became Follower of term: "+str(self.persist['currentTerm']))
 
         # Serve peer's request
         method = getattr(self, 'on_peer_' + actualMsg['type'], None)
@@ -110,7 +112,7 @@ class State:
         if method:
             method(protocol, actualMsg, msg)
         else:
-            logger.info('Unrecognized message from %s: %s',
+            logger.debug('Unrecognized message from %s: %s',
                         protocol.transport.get_extra_info('peername'), msg)
 
     def on_peer_request_vote(self, peer, msg, orig):
@@ -162,7 +164,7 @@ class State:
         granted = term_is_current and enough_start_votes and log_current \
             and sig_check
         if granted:
-            print("Casting Vote!")
+            print("Casting vote for term: " + str(msg['start_term']))
             self.persist['startTerm'] = msg['start_term']
             self.on_election = True
             response = {'type': 'response_vote', 
@@ -261,9 +263,9 @@ class State:
 class Follower(State):
     """Follower state."""
     def __init__(self, old_state=None, orchestrator=None, ID=None):
-        print("Became Follower of term: "+self.persist['currentTerm'])
         """Initialize parent and start election timer."""
         super().__init__(old_state, orchestrator)
+        print("Became Follower of term: "+str(self.persist['currentTerm']))
         if not type(self) is Candidate:
             self.volatile['start_votes'] = {}
             self.on_election = False
@@ -289,8 +291,6 @@ class Follower(State):
         self.on_election = True
         self.persist['startTerm'] += 1
 
-        print("Timed out with new startTerm:" + str(self.persist['startTerm']))
-
         msg = {'type': 'start_vote',
                'term': self.persist['currentTerm'],
                'start_term': self.persist['startTerm']}
@@ -303,10 +303,9 @@ class Follower(State):
                
     def on_peer_start_vote(self, peer, msg, orig):
         """ Collect peer votes to start an election. """
-        term_is_current = ( msg['term'] >= self.persist['currentTerm'] )
         candidate_id = msg['start_term'] % len(self.volatile['cluster'])
 
-        if term_is_current and candidate_id == self.volatile['node_id']:
+        if candidate_id == self.volatile['node_id']:
             key = self.peer_to_string(peer)
             value = {'data': msg, 'sig': str(orig[1])}
             if key not in self.volatile['start_votes']:
@@ -317,7 +316,7 @@ class Follower(State):
                 self.orchestrator.change_state(Candidate)
 
     def on_peer_append_prepare(self, peer, msg, orig):
-        if self.on_election:
+        if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
         client_msg = msg['message']
@@ -346,7 +345,7 @@ class Follower(State):
 
     def on_peer_append_entries(self, peer, msg, orig):
         """ Manages incoming log entries from the Leader """
-        if self.on_election:
+        if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
         self.restart_election_timer()
@@ -382,14 +381,15 @@ class Follower(State):
                     self.log.commit(log_idx+1)
                     added += 1
                     logger.debug('Log index is now %s', self.log.commitIndex)
+                    print("Successfully appended to log: "+str(self.log.commitIndex-1))
                 else:
-                    logger.info("Invalid signature!!")
+                    logger.debug("Invalid signature!!")
                     break
             if added > 0:
                 super().send_client_append_response()
         # could not append to log
         else:
-            logger.warning('Could not append entries. cause: %s', 'wrong\
+            logger.debug('Could not append entries. cause: %s', 'wrong\
                 term' if not term_is_current else 'prev log term mismatch')
 
         # respond to leader with success/fail of the log append
@@ -400,17 +400,23 @@ class Follower(State):
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
+    def on_client_timeout(self, protocol, msg, orig):
+        """ Vote to initiate start of election. """
+        self.start_vote()
+        
+
 class Candidate(Follower):
     """Candidate state. Notice that this state subclasses Follower."""
     def __init__(self, old_state=None, orchestrator=None):
-        print("Became Candidate!")
         """Initialize parent, increase term, vote for self, ask for votes."""
         super().__init__(old_state, orchestrator)
-        self.volatile['lead_votes'] = {}
-        self.send_vote_requests()
+        self.on_election = True
         start_terms = [self.volatile['start_votes'][key]['data']['start_term'] \
             for key in self.volatile['start_votes']]
         self.persist['startTerm'] = min(start_terms)
+        print("Became Candidate for term: " + str(self.persist['startTerm']))
+        self.volatile['lead_votes'] = {}
+        self.send_vote_requests()
 
     def send_vote_requests(self):
         """ Ask peers for votes. """
@@ -437,10 +443,9 @@ class Candidate(Follower):
 
     def on_peer_response_vote(self, peer, msg, orig):
         """ Register peers votes, transition to Leader upon majority vote. """
-        term_is_current = ( msg['term'] >= self.persist['currentTerm'] )
         same_term = ( msg['start_term'] == self.persist['startTerm'] )
 
-        if term_is_current and same_term and msg['vote_granted']:
+        if same_term and msg['vote_granted']:
             key = self.peer_to_string(peer)
             if not key in self.volatile['lead_votes']:
                 value = {'data': msg, 'sig': str(orig[1])}
@@ -462,7 +467,7 @@ class Leader(State):
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
         self.prepares = {}
         self.send_append_entries()
-        print("Became Leader!")
+        print("Became Leader of term: "+ str(self.persist['currentTerm']))
 
     def teardown(self):
         """ Stop timers before changing state """
@@ -555,10 +560,10 @@ class Leader(State):
                      'data': msg['data'], \
                      'log_index': self.log.index}
             self.log.append_entries([entry], self.log.index)
-            logger.info("Received new req, appending to " + str(log_index))
+            print("Received new req, appending to " + str(log_index))
         else:
             log_index = self.waiting_clients[tuple(msg['client'])]['log_idx']
-            logger.info("Retransmitting req at log index: " + str(log_index))
+            logger.debug("Retransmitting req at log index: " + str(log_index))
 
         # put together the prepare message
         prepare = {'type': 'append_prepare', \
