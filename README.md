@@ -24,7 +24,6 @@ Please follow the instructions below to install Zatt:
 ```
 $ git clone https://github.com/g60726/zatt.git
 $ cd zatt
-$ python3 setup.py install
 ```
 
 ### Installing Dependencies
@@ -33,6 +32,7 @@ The dependencies are all specified in the requirements.txt file. If you are usin
 ```
 $ virtualenv -p python3 .env         # Creates a virtual environment with python3
 $ source .env/bin/activate           # Activate the virtual environment
+$ python3 setup.py install           # Build zattd
 $ pip install -r requirements.txt    # Install all the dependencies
 ```
 
@@ -56,10 +56,7 @@ port, public/private keys, etc from the config file.
 
 Now you can spin up three more nodes: open more terminals and issue:
 
-`$ zattd -c zatt.conf -i 1 --type server`
-`$ zattd -c zatt.conf -i 2 --type server`
-`$ zattd -c zatt.conf -i 3 --type server`
-
+`$ zattd -c zatt.conf -i <server-id> --type server`
 
 ### Client
 
