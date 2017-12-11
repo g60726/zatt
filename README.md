@@ -1,10 +1,9 @@
-# [Zatt](https://github.com/simonacca/zatt)
+# [Zatt](https://github.com/g60726/zatt)
 
 Zatt is a distributed storage system built on the [Raft](https://raft.github.io/)
 consensus algorithm.
 
-By default, clients share a `dict` data structure, although every python object
-is potentially replicable with the `pickle` state machine.
+By default, clients share a `dict` data structure
 
 ![Zatt Logo](docs/logo.png?raw=true "Zatt Logo")
 
@@ -15,77 +14,66 @@ legacy code since the server is standalone.
 
 ## Structure of the project
 
-The most relevant part of the code concerning Raft is in the [states](https://github.com/simonacca/zatt/blob/develop/zatt/server/states.py) and in the [log](https://github.com/simonacca/zatt/blob/develop/zatt/server/log.py) files.
-
-TODO: extend
+The most relevant part of the code concerning Raft is in the zatt/server/states.py file
 
 ## Installing
-Both the server and the client are shipped in the same
-[package](https://pypi.python.org/pypi/raft/)
-(Note: this link won't work until the project is public).
 
-Zatt can be installed by several means:
-
-### Pypi
-`$ pip3 install zatt`. (Note: this won't work until the project is public).
-
-### Pip and Git
-`$ pip3 install git+ssh://github.com/simonacca/zatt.git@develop`
+Please follow the instructions below to install Zatt:
 
 ### Cloning
 ```
-$ git clone git@github.com:simonacca/zatt.git
+$ git clone https://github.com/g60726/zatt.git
 $ cd zatt
-$ git checkout develop
 $ python3 setup.py install
 ```
 
-Regardless of the installation method, `$ zattd --help` should work at this point.
+### Installing Dependencies
+The dependencies are all specified in the requirements.txt file. If you are using virtualenv, then you can use:
 
-## Examples
+```
+$ virtualenv -p python3 .env         # Creates a virtual environment with python3
+$ source .env/bin/activate           # Activate the virtual environment
+$ pip install -r requirements.txt    # Install all the dependencies
+```
 
-This screencast shows a basic usage of the code. The code run can be found below.
+At this point, you should be able to run:
+`$ zattd -h `
 
-[![asciicast](https://asciinema.org/a/7o8bpyfxh0r1uaxvpfi7u8tjl.png)](https://asciinema.org/a/7o8bpyfxh0r1uaxvpfi7u8tjl)
-
+## Launching a Cluster
 
 ### Spinning up a cluster of servers
 
-A server can be configured with command-line options or with a config file,
-in this example, we are going to use both.
-
-First, create an empty folder and enter it:
-`$ mkdir zatt_cluster && cd zatt_cluster`.
-
-Now create a config file `zatt.conf` with the following content:
-```
-{"cluster": {
-    "0": ["127.0.0.1", 5254],
-    "1": ["127.0.0.1", 5255],
-    "2": ["127.0.0.1", 5256]
- }
-}
-```
+A server can be configured with a config file. The project should come with a 
+working zatt.conf already. The provided config file allows up to 4 servers 
+nodes and 3 clients.
 
 You can now run the first node:
 
-`$ zattd -c zatt.conf --id 0 -s zatt.0.persist --debug`
+`$ zattd -c zatt.conf -i 0 --type server`
 
-This tells zattd to run the node with `id:0`, taking the info about address and port from the config file.
+This tells zattd to run the node with `id:0`, taking the info about address,
+port, public/private keys, etc from the config file.
 
-Now you can spin up a second node: open another terminal, navigate to `zatt_cluster` and issue:
+Now you can spin up three more nodes: open more terminals and issue:
 
-`$ zattd -c zatt.conf --id 2 -s zatt.2.persist --debug`
+`$ zattd -c zatt.conf -i 1 --type server`
+`$ zattd -c zatt.conf -i 2 --type server`
+`$ zattd -c zatt.conf -i 3 --type server`
 
-Repeat for a third node, this time with `id:2`
 
 ### Client
 
-To interact with the cluster, we need a client. Open a python interpreter (`$ python`) and run the following commands:
+To interact with the cluster, we need to spin up a client instance and connect
+to it. To spin up two client instances:
+
+`$ zattd -c zatt.conf --type client`
+
+To connect to the client instance, open a python interpreter (`$ python`) and 
+run the following commands:
 
 ```
 In [1]: from zatt.client import DistributedDict
-In [2]: d = DistributedDict('127.0.0.1', 5254)
+In [2]: d = DistributedDict('127.0.0.1', 9116)
 In [3]: d['key1'] = 0
 ```
 
@@ -95,30 +83,27 @@ Open the python interpreter on another terminal and run:
 
 ```
 In [1]: from zatt.client import DistributedDict
-In [2]: d = DistributedDict('127.0.0.1', 5254)
+In [2]: d = DistributedDict('127.0.0.1', 9117)
 In [3]: d['key1']
 Out[3]: 0
-In [4]: d
-Out[4]: {'key1': 0}
 ```
+
+### Launching a chaos server
+
+We also allow nodes to be launched in Byzantine mode. This means that they 
+randomly spew syntactically correct, properly signed, but essentially random
+messages onto the cluster network. To do this, kill one of your server instances
+from before and run:
+
+`$ zattd -c zatt.conf -i <server-id> --type chaos`
 
 ### Notes
 
 Please note that in order to erase the log of a node, the corresponding `zatt.{id}.persist` folder has to be removed.
 
-Also note that JSON, currently used for serialization, only supports keys of type `str` and values of type `int, float, str, bool, list, dict `.
-
 ## Tests
 In order to run the tests:
 
-* clone the repo if you haven't done so already: `git clone git@github.com:simonacca/zatt.git`
 * navigate to the test folder: `cd zatt/tests`
 * execute: `python3 run.py`
 
-## Contributing
-
-TODO
-
-## License
-
-TODO

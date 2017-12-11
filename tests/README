@@ -1,5 +1,2 @@
 1. "python setup.py install" in zatt/ directory
 2. "python run.py" in zatt/tests directory
-
-Notes:
-- Tests should avoid using the sleep() command, except in the setup phase.
