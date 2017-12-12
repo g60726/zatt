@@ -349,7 +349,28 @@ class Follower(State):
             self.orchestrator.send_peer(self.volatile['leaderId'], resp)
 
     def on_peer_append_prepare(self, peer, msg, orig):
-        pass
+        if self.on_election or msg['term'] != self.persist['currentTerm']:
+            return
+
+        sig_check = self.verify_prepares( \
+                msg['entries'], \
+                msg['sigs'])
+        if len(msg['sigs']) >= self.quorum and sig_check:
+            self.prepare_log.append_entries([msg['sigs']], msg['entries']['log_index'])
+
+            # append new entry at tip of log
+            entry = msg['entries']
+
+            # respond with successful prepare to leader
+            self.volatile['leaderId'] = msg['leaderId']
+            (entry, sig) = self.sign_message(entry)
+            resp = {'type': 'response_prepare', \
+                    'term': msg['term'], \
+                    'logIndex': msg['logIndex'], \
+                    'entry': entry, \
+                    'entrySig': str(sig)}
+            resp = self.sign_message(resp)
+            self.orchestrator.send_peer(self.volatile['leaderId'], resp)
 
     def on_peer_append_commit(self, peer, msg, orig):
         added = 0
@@ -363,7 +384,7 @@ class Follower(State):
                     log_idx = entry['log_index']
                     # record entries, signatures, and persist the proof
                     self.log.append_entries([entry], log_idx)
-                    self.prepare_log.append_entries([msg['sigs'][index]], log_idx)
+                    self.commit_log.append_entries([msg['sigs'][index]], log_idx)
                     self.log.commit(log_idx+1)
                     added += 1
                     logger.debug('Log index is now %s', self.log.commitIndex)
@@ -524,18 +545,18 @@ class Leader(State):
                 sub_type = 'append_req'
                 entries = self.prepares[log_index]['append_req']['message']
                 sigs = self.prepares[log_index]['append_req']['client_sig']
-            # elif self.commit_log.index < self.nextIndex[peer]:
-            #     # request signed by quorum of peers, send prepare
-            #     log_index = self.commit_log.index
-            #     sub_type = 'append_prepare'
-            #     entries = self.log[self.nextIndex[peer]]
-            #     sigs = self.prepare_log[self.nextIndex[peer]]
+            elif self.commit_log.index < self.nextIndex[peer]:
+                # request signed by quorum of peers, send prepare
+                log_index = self.commit_log.index
+                sub_type = 'append_prepare'
+                entries = self.log[log_index+1]
+                sigs = self.prepare_log[log_index+1]
             else:
                 # prepare confirmed by quorum of peers, send commit
                 log_index = self.nextIndex[peer]
                 sub_type = 'append_commit'
-                entries = [self.log[self.nextIndex[peer]]]
-                sigs = [self.prepare_log[self.nextIndex[peer]]]
+                entries = [self.log[log_index]]
+                sigs = [self.commit_log[log_index]]
 
             msg = {'type': 'append_entries',
                    'subType': sub_type,
@@ -586,15 +607,21 @@ class Leader(State):
         to_delete = []
         for log_idx in self.prepares:
             if len(self.prepares[log_idx]['sigs']) >= self.quorum:
-                commit_idx = self.log.commit(log_idx+1)
-                if commit_idx > log_idx:
-                    # record signatures and persist the proof
-                    self.prepare_log.append_entries( \
-                            [self.prepares[log_idx]['sigs']], log_idx)
-                    to_delete.append(log_idx)
+                # record signatures and persist the proof
+                self.prepare_log.append_entries( \
+                        [self.prepares[log_idx]['sigs']], log_idx)
+                to_delete.append(log_idx)
 
-                    # send response back to client
-                    super().send_client_append_response()
+                # respond with successful prepare to self
+                (entry, sig) = self.sign_message(self.log[log_idx+1])
+                resp = {'type': 'response_prepare', \
+                        'term': self.persist['currentTerm'], \
+                        'logIndex': log_idx, \
+                        'entry': entry, \
+                        'entrySig': str(sig)}
+                self.on_peer_response_prepare(self.volatile['address'], resp, \
+                    self.sign_message(resp))
+
         for log_idx in to_delete:
             del self.prepares[log_idx]
 
@@ -615,7 +642,7 @@ class Leader(State):
                 commit_idx = self.log.commit(log_idx+1)
                 if commit_idx > log_idx:
                     # record signatures and persist the proof
-                    self.prepare_log.append_entries( \
+                    self.commit_log.append_entries( \
                             [self.commits[log_idx]['sigs']], log_idx)
                     to_delete.append(log_idx)
 
@@ -652,7 +679,6 @@ class Leader(State):
             self.on_peer_response_append(self.volatile['address'], resp, \
                 self.sign_message(resp))
         else:
-            # TODO: Dennis send peers request to update client q
             log_index = self.waiting_clients[tuple(msg['client'])]['log_idx']
             logger.debug("Retransmitting req at log index: " + str(log_index))
 
