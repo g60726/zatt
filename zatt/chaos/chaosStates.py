@@ -38,15 +38,6 @@ def generate_response_vote(term):
             }
     return msg
 
-def generate_response_append(term):
-    msg =   {
-                'type': 'response_append',
-                'success': True if random.randint(0,1) == 1 else False,
-                'term': random.randint(term, term+1),
-                'matchIndex': random.randint(term, term+5)
-            }
-    return msg
-
 def generate_response_prepare(term):
     msg =   {
                 'type': 'response_prepare',
@@ -57,10 +48,37 @@ def generate_response_prepare(term):
             }
     return msg
 
+def generate_response_append(term):
+    msg =   {
+                'type': 'response_append',
+                'term': random.randint(term, term+1),
+                'logIndex': random.randint(term, term+5),
+                'entry': {},
+                'entrySig': "Not a sig"
+            }
+    return msg
+
+def generate_response_fail(term):
+    msg =   {
+                'type': 'response_fail',
+                'term': random.randint(term, term+1),
+                'matchIndex': random.randint(term, term+5)
+            }
+    return msg
+
+def generate_response_success(term):
+    msg =   {
+                'type': 'response_success',
+                'term': random.randint(term, term+1),
+                'matchIndex': random.randint(term, term+5)
+            }
+    return msg
+
 message_generators = \
     [ \
         generate_request_vote, generate_start_vote, generate_response_vote, \
-        generate_response_append, generate_response_prepare \
+        generate_response_append, generate_response_prepare, \
+        generate_response_fail, generate_response_success \
     ]
 
 def generate_random_message(term):
