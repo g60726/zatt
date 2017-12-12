@@ -593,13 +593,29 @@ class Leader(State):
         self.matchIndex[self.volatile['address']] = self.log.index
         self.nextIndex[self.volatile['address']] = self.log.index + 1
 
+    # def verify_sig(self, peer, data, sig):
+    #     if peer in self.volatile['public_keys']:
+    #         key = self.volatile['public_keys'][peer]
+    #     elif peer in self.volatile['client_keys']:
+    #         key = self.volatile['client_keys'][peer]
+    #     else:
+    #         return False
+    #     return crypto.verify_message(
+    #                 json.dumps(data), \
+    #                 key, \
+    #                 eval(sig))
     def on_peer_response_append(self, peer, msg, orig):
         # store peer's signed prepare
         idx = msg['logIndex']
         if idx in self.prepares and peer not in self.prepares[idx]:
             if self.log.index > idx:
                 if msg['entry'] == json.dumps(self.log[idx+1]):
-                    # TODO: check signature
+                    sig_check = self.verify_sig( \
+                        peer, \
+                        json.loads(msg['entry']), \
+                        str(msg['entrySig']))
+                    if not sig_check:
+                        return
                     sig = (json.loads(msg['entry']), str(msg['entrySig']))
                     self.prepares[idx]['sigs'][self.peer_to_string(peer)] = sig
 
@@ -631,7 +647,12 @@ class Leader(State):
         if idx in self.commits and peer not in self.commits[idx]:
             if self.log.index > idx:
                 if msg['entry'] == json.dumps(self.log[idx+1]):
-                    # TODO: check signature
+                    sig_check = self.verify_sig( \
+                        peer, \
+                        json.loads(msg['entry']), \
+                        str(msg['entrySig']))
+                    if not sig_check:
+                        return
                     sig = (json.loads(msg['entry']), str(msg['entrySig']))
                     self.commits[idx]['sigs'][self.peer_to_string(peer)] = sig
 
