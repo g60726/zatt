@@ -27,7 +27,8 @@ class State:
             self.persist = old_state.persist
             self.volatile = old_state.volatile
             self.log = old_state.log
-            self.sig_log = old_state.sig_log
+            self.prepare_log = old_state.prepare_log
+            self.commit_log = old_state.commit_log
         else:
             self.orchestrator = orchestrator
             self.persist = PersistentDict(join(config.storage, 'state'),
@@ -39,7 +40,8 @@ class State:
                 'start_votes': {}, 'server_ids': config.server_ids,
                 'lead_votes': {}}
             self.log = LogManager('log')
-            self.sig_log = LogManager('sigs', machine=None)
+            self.prepare_log = LogManager('prep', machine=None)
+            self.commit_log = LogManager('commit', machine=None)
         self.waiting_clients = {}
         self.quorum = int(math.ceil(
             (len(self.volatile['cluster'])-1) / 3.0 * 2.0) + 1)
@@ -318,7 +320,7 @@ class Follower(State):
                 self.persist['startTerm'] = msg['start_term']
                 self.orchestrator.change_state(Candidate)
 
-    def on_peer_append_prepare(self, peer, msg, orig):
+    def on_peer_append_req(self, peer, msg, orig):
         if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
@@ -381,7 +383,7 @@ class Follower(State):
                         log_idx = entry['log_index']
                         # record entries, signatures, and persist the proof
                         self.log.append_entries([entry], log_idx)
-                        self.sig_log.append_entries([msg['sigs'][index]], log_idx)
+                        self.prepare_log.append_entries([msg['sigs'][index]], log_idx)
                         self.log.commit(log_idx+1)
                         added += 1
                         logger.debug('Log index is now %s', self.log.commitIndex)
@@ -427,7 +429,7 @@ class Candidate(Follower):
         entry = None if self.log.commitIndex == -1 \
                     else self.log[self.log.commitIndex]
         sig = None if self.log.commitIndex == -1 \
-                    else self.sig_log[self.log.commitIndex]
+                    else self.prepare_log[self.log.commitIndex]
         msg = {'type': 'request_vote', \
                'term': self.persist['currentTerm'], \
                'start_term': self.persist['startTerm'], \
@@ -470,6 +472,7 @@ class Leader(State):
         self.matchIndex = {p: 0 for p in self.volatile['cluster']}
         self.nextIndex = {p: self.log.commitIndex + 1 for p in self.matchIndex}
         self.prepares = {}
+        self.commits = {}
         self.send_append_entries()
         print(str(datetime.now()) + " "+ "Became Leader of term: "+ str(self.persist['currentTerm']))
 
@@ -488,7 +491,7 @@ class Leader(State):
             prevLogSigs = None
             if self.nextIndex[peer] > 0:
                 prevLogEntry = self.log[self.nextIndex[peer] - 1]
-                prevLogSigs = self.sig_log[self.nextIndex[peer] - 1]
+                prevLogSigs = self.prepare_log[self.nextIndex[peer] - 1]
             msg = {'type': 'append_entries',
                    'term': self.persist['currentTerm'],
                    'leaderCommit': self.log.commitIndex,
@@ -498,7 +501,7 @@ class Leader(State):
                    'prevLogSigs': prevLogSigs,
                    'entries': self.log[self.nextIndex[peer]: \
                                        self.nextIndex[peer] + 100], \
-                   'sigs': self.sig_log[self.nextIndex[peer]: \
+                   'sigs': self.prepare_log[self.nextIndex[peer]: \
                                         self.nextIndex[peer] + 100]}
 
             logger.debug('Sending %s entries to %s. Start index %s',
@@ -506,26 +509,38 @@ class Leader(State):
 
             self.orchestrator.send_peer(peer, self.sign_message(msg))
 
+        # send append_req for new requests to each follower
+        if self.prepare_log.index < self.log.index:
+            for peer in self.volatile['cluster']:
+                if peer == self.volatile['address']:
+                    continue
+                msg = self.prepares[self.prepare_log.index]['append_req']
+                self.orchestrator.send_peer(peer, self.sign_message(msg))
+
         # schedule heartbeat for next execution
         timeout = randrange(1, 4) * 10 ** (-1 if config.debug else -2)
         loop = asyncio.get_event_loop()
         self.append_timer = loop.call_later(timeout, self.send_append_entries)
 
-    def on_peer_response_append(self, peer, msg, orig):
-        # record peer's signed prepare
-        if msg['success']:
-            # update leader's understanding of peer's updated log indices
-            self.matchIndex[peer] = min(self.log.index, msg['matchIndex'])
-            self.nextIndex[peer] = min(self.log.index, msg['matchIndex'] + 1)
-
-            # because leader is also calling on_peer_response_append itself, 
-            # this is the leader trying to update its own indices
-            self.matchIndex[self.volatile['address']] = self.log.index
-            self.nextIndex[self.volatile['address']] = self.log.index + 1
+    def on_peer_response_fail(self, peer, msg, orig):
         # backtrack 1 index and try again
-        else:
-            self.nextIndex[peer] = max(0, self.nextIndex[peer] - 1)
+        self.nextIndex[peer] = max(0, self.nextIndex[peer] - 1)
 
+    def on_peer_response_success(self, peer, msg, orig):
+        # update leader's understanding of peer's updated log indices
+        self.matchIndex[peer] = min(self.log.index, msg['matchIndex'])
+        self.nextIndex[peer] = min(self.log.index, msg['matchIndex'] + 1)
+
+        # because leader is also calling on_peer_response_append itself, 
+        # this is the leader trying to update its own indices
+        self.matchIndex[self.volatile['address']] = self.log.index
+        self.nextIndex[self.volatile['address']] = self.log.index + 1
+
+    def on_peer_response_append(self, peer, msg, orig):
+        if msg['success']:
+            self.on_peer_response_success(peer, msg, orig)
+        else:
+            self.on_peer_response_fail(peer, msg, orig)
 
     def on_peer_response_prepare(self, peer, msg, orig):
         # store peer's signed prepare
@@ -544,7 +559,7 @@ class Leader(State):
                 commit_idx = self.log.commit(log_idx+1)
                 if commit_idx > log_idx:
                     # record signatures and persist the proof
-                    self.sig_log.append_entries( \
+                    self.prepare_log.append_entries( \
                             [self.prepares[log_idx]['sigs']], log_idx)
                     to_delete.append(log_idx)
 
@@ -553,35 +568,27 @@ class Leader(State):
         for log_idx in to_delete:
             del self.prepares[log_idx]
 
+    def on_peer_response_temp(self, peer, msg, orig):
+        pass
+
 
     def on_client_append(self, protocol, msg, orig):
         new_req = super().store_client_new_req(msg)
 
-        # append new entry to tip of Leader log
-        log_index = 0
         if new_req:
+            # append new entry to tip of Leader log
             log_index = self.log.index
-            entry = {'term': self.persist['currentTerm'], \
-                     'data': msg['data'], \
-                     'log_index': self.log.index}
-            self.log.append_entries([entry], self.log.index)
-            print(str(datetime.now()) + " "+ "Received new req, appending to " + str(log_index))
-        else:
-            log_index = self.waiting_clients[tuple(msg['client'])]['log_idx']
-            logger.debug("Retransmitting req at log index: " + str(log_index))
-
-        # put together the prepare message
-        prepare = {'type': 'append_prepare', \
-                   'term': self.persist['currentTerm'], \
-                   'leaderId': self.volatile['address'], \
-                   'lead_votes': self.volatile['lead_votes'], \
-                   'logIndex': log_index, \
-                   'message': msg, \
-                   'client_sig': str(orig[1])}
-
-        if new_req:
-            self.prepares[log_index] = {'prepare_msg': prepare, \
+            entry = self.create_entry(msg)
+            self.log.append_entries([entry], log_index)
+            append_req = self.create_append_req(orig, log_index)
+            
+            self.prepares[log_index] = {'append_req': append_req, \
                                                 'sigs': {}}
+            self.commits[log_index] = {'sigs': {}}
+
+            print(str(datetime.now()) + " Received new req, appending to " \
+                + str(log_index))
+
             # respond with successful prepare to self
             (entry, sig) = self.sign_message(entry)
             resp = {'type': 'response_prepare', \
@@ -591,10 +598,29 @@ class Leader(State):
                     'entrySig': str(sig)}
             self.on_peer_response_prepare(self.volatile['address'], resp, \
                 self.sign_message(resp))
+        else:
+            # TODO: Dennis send peers request to update client q
+            log_index = self.waiting_clients[tuple(msg['client'])]['log_idx']
+            logger.debug("Retransmitting req at log index: " + str(log_index))
 
-        # TODO: Dennis delegate to periodic function
-        # tell followers to prepare new entry
-        for peer in self.volatile['cluster']:
-            if peer == self.volatile['address']:
-                continue
-            self.orchestrator.send_peer(peer, self.sign_message(prepare))
+    def create_entry(self, msg):
+        entry = {'term': self.persist['currentTerm'], \
+             'data': msg['data'], \
+             'log_index': self.log.index}
+        return entry
+
+    def create_append_req(self, orig_client_msg, idx):
+        append_req = {'type': 'append_req', \
+               'term': self.persist['currentTerm'], \
+               'leaderId': self.volatile['address'], \
+               'lead_votes': self.volatile['lead_votes'], \
+               'logIndex': idx, \
+               'message': json.loads(orig_client_msg[0]), \
+               'client_sig': str(orig_client_msg[1])}
+        return append_req
+
+    def create_append_prepare():
+        pass
+
+    def create_append_commit():
+        pass
