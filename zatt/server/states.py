@@ -340,7 +340,7 @@ class Follower(State):
             # respond with successful prepare to leader
             self.volatile['leaderId'] = msg['leaderId']
             (entry, sig) = self.sign_message(entry)
-            resp = {'type': 'response_prepare', \
+            resp = {'type': 'response_append', \
                     'term': msg['term'], \
                     'logIndex': msg['logIndex'], \
                     'entry': entry, \
@@ -399,10 +399,14 @@ class Follower(State):
                 term' if not term_is_current else 'prev log term mismatch')
 
         # respond to leader with success/fail of the log append
-        resp = {'type': 'response_append', \
-                'success': success, \
-                'term': self.persist['currentTerm'], \
-                'matchIndex': self.log.commitIndex}
+        if success:
+            resp = {'type': 'response_success', \
+                    'term': self.persist['currentTerm'], \
+                    'matchIndex': self.log.commitIndex}
+        else:
+            resp = {'type': 'response_fail', \
+                    'term': self.persist['currentTerm'], \
+                    'matchIndex': self.log.commitIndex}
         resp = self.sign_message(resp)
         self.orchestrator.send_peer(peer, resp)
 
@@ -531,18 +535,12 @@ class Leader(State):
         self.matchIndex[peer] = min(self.log.index, msg['matchIndex'])
         self.nextIndex[peer] = min(self.log.index, msg['matchIndex'] + 1)
 
-        # because leader is also calling on_peer_response_append itself, 
+        # because leader is also calling on_peer_response_success itself, 
         # this is the leader trying to update its own indices
         self.matchIndex[self.volatile['address']] = self.log.index
         self.nextIndex[self.volatile['address']] = self.log.index + 1
 
     def on_peer_response_append(self, peer, msg, orig):
-        if msg['success']:
-            self.on_peer_response_success(peer, msg, orig)
-        else:
-            self.on_peer_response_fail(peer, msg, orig)
-
-    def on_peer_response_prepare(self, peer, msg, orig):
         # store peer's signed prepare
         idx = msg['logIndex']
         if idx in self.prepares and peer not in self.prepares[idx]:
@@ -591,12 +589,12 @@ class Leader(State):
 
             # respond with successful prepare to self
             (entry, sig) = self.sign_message(entry)
-            resp = {'type': 'response_prepare', \
+            resp = {'type': 'response_append', \
                     'term': self.persist['currentTerm'], \
                     'logIndex': log_index, \
                     'entry': entry, \
                     'entrySig': str(sig)}
-            self.on_peer_response_prepare(self.volatile['address'], resp, \
+            self.on_peer_response_append(self.volatile['address'], resp, \
                 self.sign_message(resp))
         else:
             # TODO: Dennis send peers request to update client q
