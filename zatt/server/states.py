@@ -324,9 +324,9 @@ class Follower(State):
         if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
-        client_msg = msg['message']
+        client_msg = msg['entries']
         client_addr = tuple(client_msg['client'])
-        if not super().verify_sig(client_addr, client_msg, msg['client_sig']):
+        if not super().verify_sig(client_addr, client_msg, msg['sigs']):
             return
 
         new_req = super().store_client_new_req(client_msg)
@@ -347,6 +347,38 @@ class Follower(State):
                     'entrySig': str(sig)}
             resp = self.sign_message(resp)
             self.orchestrator.send_peer(self.volatile['leaderId'], resp)
+
+    def on_peer_append_prepare(self, peer, msg, orig):
+        pass
+
+    def on_peer_append_commit(self, peer, msg, orig):
+        added = 0
+        for index in range(len(msg['sigs'])):
+            if msg['entries'][index]['log_index'] >= self.log.commitIndex:
+                sig_check = self.verify_prepares( \
+                    msg['entries'][index], \
+                    msg['sigs'][index])
+                if len(msg['sigs'][index]) >= self.quorum and sig_check:
+                    entry = msg['entries'][index]
+                    log_idx = entry['log_index']
+                    # record entries, signatures, and persist the proof
+                    self.log.append_entries([entry], log_idx)
+                    self.prepare_log.append_entries([msg['sigs'][index]], log_idx)
+                    self.log.commit(log_idx+1)
+                    added += 1
+                    logger.debug('Log index is now %s', self.log.commitIndex)
+                else:
+                    logger.debug("Invalid signature!!")
+                    break
+        if added > 0:
+            print(str(datetime.now()) + " "+ "Successfully appended to log: "+str(self.log.commitIndex-1))
+            super().send_client_append_response()
+
+        resp = {'type': 'response_success', \
+                'term': self.persist['currentTerm'], \
+                'matchIndex': self.log.commitIndex}
+        resp = self.sign_message(resp)
+        self.orchestrator.send_peer(peer, resp)
 
     def on_peer_append_entries(self, peer, msg, orig):
         """ Manages incoming log entries from the Leader """
@@ -370,45 +402,26 @@ class Follower(State):
 
         success = term_is_current and prev_log_term_match
 
-        # attempt to append to log
-        if success:
-            added = 0
-            for index in range(len(msg['sigs'])):
-                if msg['entries'][index]['log_index'] >= self.log.commitIndex:
-                    sig_check = self.verify_prepares( \
-                        msg['entries'][index], \
-                        msg['sigs'][index])
-                    if len(msg['sigs'][index]) >= self.quorum and sig_check:
-                        entry = msg['entries'][index]
-                        log_idx = entry['log_index']
-                        # record entries, signatures, and persist the proof
-                        self.log.append_entries([entry], log_idx)
-                        self.prepare_log.append_entries([msg['sigs'][index]], log_idx)
-                        self.log.commit(log_idx+1)
-                        added += 1
-                        logger.debug('Log index is now %s', self.log.commitIndex)
-                    else:
-                        logger.debug("Invalid signature!!")
-                        break
-            if added > 0:
-                print(str(datetime.now()) + " "+ "Successfully appended to log: "+str(self.log.commitIndex-1))
-                super().send_client_append_response()
         # could not append to log
-        else:
+        if not success:
             logger.debug('Could not append entries. cause: %s', 'wrong\
                 term' if not term_is_current else 'prev log term mismatch')
-
-        # respond to leader with success/fail of the log append
-        if success:
-            resp = {'type': 'response_success', \
-                    'term': self.persist['currentTerm'], \
-                    'matchIndex': self.log.commitIndex}
-        else:
             resp = {'type': 'response_fail', \
                     'term': self.persist['currentTerm'], \
                     'matchIndex': self.log.commitIndex}
-        resp = self.sign_message(resp)
-        self.orchestrator.send_peer(peer, resp)
+            resp = self.sign_message(resp)
+            self.orchestrator.send_peer(peer, resp)
+            return
+
+        if msg['subType'] == 'append_commit':
+            self.on_peer_append_commit(peer, msg, orig)
+            return
+        elif msg['subType'] == 'append_prepare':
+            self.on_peer_append_prepare(peer, msg, orig)
+            return
+        elif msg['subType'] == 'append_req':
+            self.on_peer_append_req(peer, msg, orig)
+            return
 
     def on_client_timeout(self, protocol, msg, orig):
         """ Vote to initiate start of election. """
@@ -511,18 +524,18 @@ class Leader(State):
                 sub_type = 'append_req'
                 entries = self.prepares[log_index]['append_req']['message']
                 sigs = self.prepares[log_index]['append_req']['client_sig']
-            elif self.commit_log.index < self.nextIndex[peer]:
-                # request signed by quorum of peers, send prepare
-                log_index = self.commit_log.index
-                sub_type = 'append_prepare'
-                entries = self.log[self.nextIndex[peer]]
-                sigs = self.prepare_log[self.nextIndex[peer]]
+            # elif self.commit_log.index < self.nextIndex[peer]:
+            #     # request signed by quorum of peers, send prepare
+            #     log_index = self.commit_log.index
+            #     sub_type = 'append_prepare'
+            #     entries = self.log[self.nextIndex[peer]]
+            #     sigs = self.prepare_log[self.nextIndex[peer]]
             else:
                 # prepare confirmed by quorum of peers, send commit
                 log_index = self.nextIndex[peer]
                 sub_type = 'append_commit'
-                entries = self.log[self.nextIndex[peer]]
-                sigs = self.commit_log[self.nextIndex[peer]]
+                entries = [self.log[self.nextIndex[peer]]]
+                sigs = [self.prepare_log[self.nextIndex[peer]]]
 
             msg = {'type': 'append_entries',
                    'subType': sub_type,
@@ -532,23 +545,13 @@ class Leader(State):
                    'prevLogEntry': prevLogEntry,
                    'prevLogSigs': prevLogSigs,
                    'logIndex': log_index,
-                   'entries': self.log[self.nextIndex[peer]: \
-                                        self.nextIndex[peer] + 100], \
-                   'sigs': self.prepare_log[self.nextIndex[peer]: \
-                                        self.nextIndex[peer] + 100]}
+                   'entries': entries,
+                   'sigs': sigs}
 
             logger.debug('Sending %s entries to %s. Start index %s',
                          len(msg['entries']), peer, self.nextIndex[peer])
 
             self.orchestrator.send_peer(peer, self.sign_message(msg))
-
-        # send append_req for new requests to each follower
-        if self.prepare_log.index < self.log.index:
-            for peer in self.volatile['cluster']:
-                if peer == self.volatile['address']:
-                    continue
-                msg = self.prepares[self.prepare_log.index]['append_req']
-                self.orchestrator.send_peer(peer, self.sign_message(msg))
 
         # schedule heartbeat for next execution
         timeout = randrange(1, 4) * 10 ** (-1 if config.debug else -2)

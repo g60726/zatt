@@ -86,7 +86,7 @@ class InProgress(State):
             self.orchestrator.transport.send(message)
 
     def start_timer(self):
-        timeout = 1.0
+        timeout = 1.5
         loop = asyncio.get_event_loop()
         self.request_timer = \
             loop.call_later(timeout, self.timed_out)
