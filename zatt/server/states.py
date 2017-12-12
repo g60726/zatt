@@ -324,6 +324,10 @@ class Follower(State):
         if self.on_election or msg['term'] != self.persist['currentTerm']:
             return
 
+        # Do not allow overwriting of already prepared messages
+        if self.prepare_log.index > msg['logIndex']:
+            return
+
         client_msg = msg['entries']
         client_addr = tuple(client_msg['client'])
         if not super().verify_sig(client_addr, client_msg, msg['sigs']):
@@ -350,6 +354,10 @@ class Follower(State):
 
     def on_peer_append_prepare(self, peer, msg, orig):
         if self.on_election or msg['term'] != self.persist['currentTerm']:
+            return
+
+        # Do not allow overwriting of already prepared messages
+        if self.prepare_log.index > msg['logIndex']:
             return
 
         sig_check = self.verify_prepares( \
@@ -593,17 +601,6 @@ class Leader(State):
         self.matchIndex[self.volatile['address']] = self.log.index
         self.nextIndex[self.volatile['address']] = self.log.index + 1
 
-    # def verify_sig(self, peer, data, sig):
-    #     if peer in self.volatile['public_keys']:
-    #         key = self.volatile['public_keys'][peer]
-    #     elif peer in self.volatile['client_keys']:
-    #         key = self.volatile['client_keys'][peer]
-    #     else:
-    #         return False
-    #     return crypto.verify_message(
-    #                 json.dumps(data), \
-    #                 key, \
-    #                 eval(sig))
     def on_peer_response_append(self, peer, msg, orig):
         # store peer's signed prepare
         idx = msg['logIndex']
