@@ -496,15 +496,44 @@ class Leader(State):
             if self.nextIndex[peer] > 0:
                 prevLogEntry = self.log[self.nextIndex[peer] - 1]
                 prevLogSigs = self.prepare_log[self.nextIndex[peer] - 1]
+
+            if self.nextIndex[peer] < 0 or self.nextIndex[peer] > self.log.index:
+                # no entries to send, send heartbeat
+                log_index = self.nextIndex[peer]
+                sub_type = 'heartbeat'
+                entries = self.log[self.nextIndex[peer]: \
+                                        self.nextIndex[peer] + 100]
+                sigs = self.prepare_log[self.nextIndex[peer]: \
+                                        self.nextIndex[peer] + 100]
+            elif self.prepare_log.index < self.nextIndex[peer]:
+                # new request, send copy of client message
+                log_index = self.prepare_log.index
+                sub_type = 'append_req'
+                entries = self.prepares[log_index]['append_req']['message']
+                sigs = self.prepares[log_index]['append_req']['client_sig']
+            elif self.commit_log.index < self.nextIndex[peer]:
+                # request signed by quorum of peers, send prepare
+                log_index = self.commit_log.index
+                sub_type = 'append_prepare'
+                entries = self.log[self.nextIndex[peer]]
+                sigs = self.prepare_log[self.nextIndex[peer]]
+            else:
+                # prepare confirmed by quorum of peers, send commit
+                log_index = self.nextIndex[peer]
+                sub_type = 'append_commit'
+                entries = self.log[self.nextIndex[peer]]
+                sigs = self.commit_log[self.nextIndex[peer]]
+
             msg = {'type': 'append_entries',
+                   'subType': sub_type,
                    'term': self.persist['currentTerm'],
-                   'leaderCommit': self.log.commitIndex,
                    'leaderId': self.volatile['address'],
                    'lead_votes': self.volatile['lead_votes'],
                    'prevLogEntry': prevLogEntry,
                    'prevLogSigs': prevLogSigs,
+                   'logIndex': log_index,
                    'entries': self.log[self.nextIndex[peer]: \
-                                       self.nextIndex[peer] + 100], \
+                                        self.nextIndex[peer] + 100], \
                    'sigs': self.prepare_log[self.nextIndex[peer]: \
                                         self.nextIndex[peer] + 100]}
 
@@ -566,8 +595,31 @@ class Leader(State):
         for log_idx in to_delete:
             del self.prepares[log_idx]
 
-    def on_peer_response_temp(self, peer, msg, orig):
-        pass
+    def on_peer_response_prepare(self, peer, msg, orig):
+        # store peer's signed prepare
+        idx = msg['logIndex']
+        if idx in self.commits and peer not in self.commits[idx]:
+            if self.log.index > idx:
+                if msg['entry'] == json.dumps(self.log[idx+1]):
+                    # TODO: check signature
+                    sig = (json.loads(msg['entry']), str(msg['entrySig']))
+                    self.commits[idx]['sigs'][self.peer_to_string(peer)] = sig
+
+        # try to commit entries with a quorum of signatures
+        to_delete = []
+        for log_idx in self.commits:
+            if len(self.commits[log_idx]['sigs']) >= self.quorum:
+                commit_idx = self.log.commit(log_idx+1)
+                if commit_idx > log_idx:
+                    # record signatures and persist the proof
+                    self.prepare_log.append_entries( \
+                            [self.commits[log_idx]['sigs']], log_idx)
+                    to_delete.append(log_idx)
+
+                    # send response back to client
+                    super().send_client_append_response()
+        for log_idx in to_delete:
+            del self.commits[log_idx]
 
 
     def on_client_append(self, protocol, msg, orig):
